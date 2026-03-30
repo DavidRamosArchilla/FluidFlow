@@ -1,0 +1,100 @@
+# *FluidFlow*: a flow-matching generative model for fluid dynamics surrogates on unstructured meshes
+
+**David Ramos¹, Lucas Lacasa², Fermín Gutiérrez¹, Eusebio Valero¹·³, Gonzalo Rubio¹·³**
+
+¹ ETSIAE-UPM · School of Aeronautics, Universidad Politécnica de Madrid  
+² Institute for Cross-Disciplinary Physics and Complex Systems (IFISC, CSIC-UIB)  
+³ Center for Computational Simulation, Universidad Politécnica de Madrid  
+
+[![Paper](https://img.shields.io/badge/Paper-coming%20soon-lightgrey?style=flat-square)](https://github.com/DavidRamosArchilla/FluidFlow)
+[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b?style=flat-square)](https://github.com/DavidRamosArchilla/FluidFlow)
+[![Code](https://img.shields.io/badge/GitHub-Code-blue?style=flat-square&logo=github)](https://github.com/DavidRamosArchilla/FluidFlow)
+[![Project Page](https://img.shields.io/badge/Project-Page-2e8fd6?style=flat-square)](https://DavidRamosArchilla.github.io/FluidFlow)
+
+---
+
+![Aircraft animation](docs/src/videos/cp_animation_jet.mp4)
+
+## Abstract
+
+Computational fluid dynamics (CFD) provides high-fidelity simulations of fluid flows but remains computationally expensive for many-query applications. In recent years deep supervised learning (DL) has been used to construct data-driven fluid-dynamic surrogate models. In this work we consider a different learning paradigm and embrace generative modelling as a framework for constructing scalable fluid-dynamics surrogate models.
+
+We introduce *FluidFlow*, a generative model based on conditional flow-matching — a recent alternative to diffusion models that learns deterministic transport maps between noise and data distributions. *FluidFlow* is specifically designed to operate directly on CFD data defined on both structured and unstructured meshes alike, without the need to perform any mesh interpolation pre-processing and preserving geometric fidelity.
+
+We assess the capabilities of *FluidFlow* using two different core neural network architectures — a U-Net and a Diffusion Transformer (DiT) — and condition their learning on physically meaningful parameters such as Mach number, angle of attack, or stagnation pressure (a proxy for Reynolds number). The methodology is validated on two benchmark problems of increasing complexity: prediction of pressure coefficients along an airfoil boundary across different operating conditions, and prediction of pressure and friction coefficients over a full three-dimensional aircraft geometry discretized on a large unstructured mesh.
+
+In both cases, *FluidFlow* outperforms strong multilayer perceptron baselines, achieving significantly lower error metrics and improved generalisation across operating conditions. Notably, the transformer-based architecture enables scalable learning on large unstructured datasets while maintaining high predictive accuracy. These results demonstrate that flow-matching generative models provide an effective and flexible framework for surrogate modelling in fluid dynamics, with potential for realistic engineering and scientific applications.
+
+---
+
+## Method
+
+We trained FluidFlow with 2 different CFD datasets: airfoil Cp distribution and aircraft Cp and Cf distributions. The airfoil case is simpler, since it can be considered as 1D structured data. Here, we tested two neural network architectures: U-Net and DiT. Both models perform similarly and can work with this kind of data without significant modification.
+
+However, some problems arise when we switch to 3D. Here, the data comes from unstructured meshes and spatial information is more difficult to capture. This makes the U-Net unsuitable for this task, since it relies on convolutional layers. To address this issue, we treated the data as a sequence of points. With this approach, the DiT could be used with only minor modifications to the patching block to accommodate this sequential data. However, the DiT presents its own challenges since it relies on the attention mechanism, which scales quadratically with the number of points — too expensive given that each aircraft has more than 260,000 points.
+
+We propose replacing self-attention with linear attention, a different approach that does not scale quadratically and incurs only a slight loss in accuracy. The diagram below illustrates how the patching and attention components of the blocks are modified.
+
+![FluidFlow Pipeline](docs/src/images/generalDiagram.svg)
+*Figure 1. Overview of the FluidFlow DiT modifications: 1D patcher and linear attention replacement.*
+
+---
+
+## 3D Aircraft Results
+
+FluidFlow faithfully reconstructs high-fidelity pressure and velocity fields across a wide range of Reynolds numbers and geometries directly on the native unstructured mesh, without any remeshing step.
+
+![FluidFlow vs CFD](docs/src/images/aircraft_cfd_comparison.png)
+*Comparison between (ground truth) CFD pressure/friction coefficient fields (top panels) and the prediction generated by the DiT flow-matching model (bottom panels) for one particular operating condition with parameters π = 1×10⁵, M = 0.3 and AoA = −6.*
+
+We evaluate FluidFlow on the [ONERA 468 CRM challenge](https://www.codabench.org/competitions/7535/), a public benchmark for aerodynamic surrogate modeling on the Common Research Model geometry. The task consists of predicting the pressure coefficient Cp and the friction coefficients Cf,x, Cf,y, Cf,z over the aircraft surface across varying flight conditions, using the official train/test split provided by the challenge. We compare against the baseline MLP model supplied by the organizers — FluidFlow (DiT) outperforms it on every metric.
+
+| Model | R² | R²\_Cp | R²\_Cf,x | R²\_Cf,y | R²\_Cf,z |
+|---|---|---|---|---|---|
+| MLP | 0.956 | 0.972 | 0.944 | 0.951 | 0.957 |
+| *FluidFlow* (DiT) | **0.965** | **0.974** | **0.959** | **0.960** | **0.965** |
+
+---
+
+## Airfoil Results
+
+FluidFlow outperforms a standard multilayer perceptron (MLP). The following animations demonstrate how FluidFlow carries out the denoising process for the airfoil Cp case — starting from Gaussian noise and travelling to the data distribution for unseen test cases.
+
+| | | |
+|:---:|:---:|:---:|
+| ![Airfoil 1](docs/src/videos/AirfoilAnimation1.mp4) | ![Airfoil 2](docs/src/videos/AirfoilAnimation2.mp4) | ![Airfoil 3](docs/src/videos/AirfoilAnimation3.mp4) |
+| Airfoil simulation 1 | Airfoil simulation 2 | Airfoil simulation 3 |
+| ![Airfoil 4](docs/src/videos/AirfoilAnimation4.mp4) | ![Airfoil 5](docs/src/videos/AirfoilAnimation5.mp4) | |
+| Airfoil simulation 4 | Airfoil simulation 5 | |
+
+> **Note:** GitHub does not render `.mp4` files inline. Please visit the [project page](https://DavidRamosArchilla.github.io/FluidFlow) to watch the animations.
+
+In the following table we compare the metrics extracted for the test set of a well-optimized MLP (tuned via Optuna) with the two versions of FluidFlow (U-Net and DiT):
+
+| Model | MSE | RMSE | MAE | MRE (%) | AE₉₅ | AE₉₉ | R² | Relative L² |
+|---|---|---|---|---|---|---|---|---|
+| Vanilla MLP | 0.00129 | 0.03598 | 0.01763 | 16.85219 | 0.05716 | 0.14176 | 0.99730 | 0.04911 |
+| *FluidFlow* (U-Net) | **0.00009** | 0.00961 | **0.00240** | 4.48810 | **0.00761** | **0.03175** | **0.99981** | 0.01325 |
+| *FluidFlow* (DiT) | **0.00009** | **0.00953** | 0.00249 | **3.43723** | 0.00764 | 0.03246 | **0.99981** | **0.01314** |
+
+---
+
+## BibTeX
+
+If you find this work useful, please consider citing:
+
+```bibtex
+@article{ramos2025fluidflow,
+  title     = {FluidFlow: a flow-matching generative model for
+               fluid dynamics surrogates on unstructured meshes},
+  author    = {Ramos, David and Lacasa, Lucas and
+               Guti{\'e}rrez, Ferm{\'i}n and
+               Valero, Eusebio and Rubio, Gonzalo},
+  journal   = {arXiv preprint arXiv:2501.XXXXX},
+  year      = {2025},
+}
+```
+
+---
+
+© 2026 FluidFlow Authors · [Project Page](https://DavidRamosArchilla.github.io/FluidFlow) · [NuMath Lab](https://numath.dmae.upm.es/)
