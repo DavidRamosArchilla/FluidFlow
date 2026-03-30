@@ -13,7 +13,7 @@
 
 ---
 
-![Aircraft animation](https://davidramosarchilla.github.io/FluidFlow/src/videos/cp_animation_jet.mp4)
+<video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/cp_animation_jet.mp4" width="100%" controls autoplay loop></video>
 
 ## Abstract
 
@@ -66,6 +66,29 @@ FluidFlow outperforms a standard multilayer perceptron (MLP). The following anim
 | Airfoil simulation 1 | Airfoil simulation 2 | Airfoil simulation 3 |
 | ![Airfoil 4](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation4.mp4) | ![Airfoil 5](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation5.mp4) | |
 | Airfoil simulation 4 | Airfoil simulation 5 | |
+
+<table style="width: 100%; text-align: center;">
+  <tr>
+    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation1.mp4" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation2.mp4" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation3.mp4" width="100%" controls autoplay loop muted></video></td>
+  </tr>
+  <tr>
+    <td>Airfoil simulation 1</td>
+    <td>Airfoil simulation 2</td>
+    <td>Airfoil simulation 3</td>
+  </tr>
+  <tr>
+    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation4.mp4" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation5.mp4" width="100%" controls autoplay loop muted></video></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>Airfoil simulation 4</td>
+    <td>Airfoil simulation 5</td>
+    <td></td>
+  </tr>
+</table>
 
 > **Note:** GitHub does not render `.mp4` files inline. Please visit the [project page](https://DavidRamosArchilla.github.io/FluidFlow) to watch the animations.
 
