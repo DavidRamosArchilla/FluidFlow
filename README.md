@@ -60,13 +60,6 @@ We evaluate FluidFlow on the [ONERA 468 CRM challenge](https://www.codabench.org
 
 FluidFlow outperforms a standard multilayer perceptron (MLP). The following animations demonstrate how FluidFlow carries out the denoising process for the airfoil Cp case — starting from Gaussian noise and travelling to the data distribution for unseen test cases.
 
-| | | |
-|:---:|:---:|:---:|
-| ![Airfoil 1](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation1.mp4) | ![Airfoil 2](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation2.mp4) | ![Airfoil 3](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation3.mp4) |
-| Airfoil simulation 1 | Airfoil simulation 2 | Airfoil simulation 3 |
-| ![Airfoil 4](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation4.mp4) | ![Airfoil 5](https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation5.mp4) | |
-| Airfoil simulation 4 | Airfoil simulation 5 | |
-
 <table style="width: 100%; text-align: center;">
   <tr>
     <td><video src="https://github.com/user-attachments/assets/d9a5cbf6-d8f1-4ac0-91fe-04e04170209d" width="100%" controls autoplay loop muted></video></td>
