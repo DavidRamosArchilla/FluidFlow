@@ -69,9 +69,9 @@ FluidFlow outperforms a standard multilayer perceptron (MLP). The following anim
 
 <table style="width: 100%; text-align: center;">
   <tr>
-    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation1.mp4" width="100%" controls autoplay loop muted></video></td>
-    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation2.mp4" width="100%" controls autoplay loop muted></video></td>
-    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation3.mp4" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://github.com/user-attachments/assets/d9a5cbf6-d8f1-4ac0-91fe-04e04170209d" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://github.com/user-attachments/assets/afd95730-588a-45ec-8e29-26448bdab3fd" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://github.com/user-attachments/assets/1a04454a-cfc2-4fab-9911-40b4ac678de8" width="100%" controls autoplay loop muted></video></td>
   </tr>
   <tr>
     <td>Airfoil simulation 1</td>
@@ -79,8 +79,8 @@ FluidFlow outperforms a standard multilayer perceptron (MLP). The following anim
     <td>Airfoil simulation 3</td>
   </tr>
   <tr>
-    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation4.mp4" width="100%" controls autoplay loop muted></video></td>
-    <td><video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/AirfoilAnimation5.mp4" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://github.com/user-attachments/assets/2bf0a392-c552-4938-8096-1adfae8f41f6" width="100%" controls autoplay loop muted></video></td>
+    <td><video src="https://github.com/user-attachments/assets/6d67513d-946a-47fa-8e15-cbcdb52eda03" width="100%" controls autoplay loop muted></video></td>
     <td></td>
   </tr>
   <tr>
