@@ -13,7 +13,7 @@
 
 ---
 
-<video src="https://davidramosarchilla.github.io/FluidFlow/src/videos/cp_animation_jet.mp4" width="100%" controls autoplay loop></video>
+<video src="https://github.com/user-attachments/assets/6730b733-7352-4ac2-8f4b-aa0821bf3394" width="100%" controls autoplay loop></video>
 
 ## Abstract
 
