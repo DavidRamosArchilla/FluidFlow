@@ -28,29 +28,34 @@
     <sup>2</sup> Institute for Cross-Disciplinary Physics and Complex Systems (IFISC, CSIC-UIB) &nbsp;·&nbsp;
     <sup>3</sup> Center for Computational Simulation, Universidad Politécnica de Madrid
   </p>
-  <img
-    src="./src/images/bannerUPM.webp"
-    alt="Universidad Politécnica de Madrid"
-    style="height: 116px; width: auto; margin: 16px auto 4px; display: block;"
-  />
-  <p class="affiliation">Universidad Politécnica de Madrid &nbsp;·&nbsp; School of Aeronautics</p>
-
+  <a href="https://numath.dmae.upm.es/" target="_blank">
+    <img
+      src="./src/images/bannerUPM.webp"
+      alt="Universidad Politécnica de Madrid"
+      style="height: 116px; width: auto; margin: 16px auto 4px; display: block;"
+    />
+  </a>
+  <p class="affiliation">Universidad Politécnica de Madrid</p>
+  <!-- &nbsp;·&nbsp; School of Aeronautic -->
   <div class="btn-group">
     <a href="#" class="btn btn-primary">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" target="_blank"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
       Paper
     </a>
     <a href="#" class="btn btn-outline">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" target="_blank"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
       arXiv
     </a>
-    <a href="#" class="btn btn-outline">
+    <a href="https://github.com/DavidRamosArchilla/FluidFlow" class="btn btn-outline" target="_blank">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
       Code
     </a>
-    <a href="#" class="btn btn-outline">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-      Dataset
+    <a href="#animations" class="btn btn-outline">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <rect x="2" y="4" width="20" height="16" rx="2"/>
+        <polygon points="10,9 16,12 10,15" fill="currentColor" stroke="none"/>
+      </svg>
+      Animations
     </a>
   </div>
 </header>
@@ -62,15 +67,13 @@
         class="video-teaser"
         src="./src/videos/cp_animation_jet.mp4"
         controls
-        autoplay
         muted
-        loop
         playsinline
         style="width:100%; border-radius:14px; display:block;"
     >
         Your browser does not support the video tag.
     </video>
-    <p class="video-caption">Overview of FluidFlow — generation process of the pressure coefficient on an unstructured aerodynamic mesh.</p>
+    <p class="video-caption">Overview of FluidFlow — generation process of the pressure coefficient on an unstructured aerodynamic mesh of an aircraft.</p>
   </section>
 </div>
 
@@ -115,62 +118,162 @@
 <!-- RESULTS — IMAGES -->
 <div class="container">
   <section class="fade-in">
-    <h2>Qualitative Results</h2>
+    <h2>3D Aircraft Results</h2>
     <p style="margin-bottom: 24px;">
       FluidFlow faithfully reconstructs high-fidelity pressure and velocity fields across a wide range of Reynolds numbers and geometries directly on the native unstructured mesh, without any remeshing step.
     </p>
-    <div class="img-grid">
-      <div class="img-card">
-        <img src="https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?w=600&q=80" alt="Pressure field — airfoil" />
-        <div class="img-label">Pressure field — NACA 0012 · Re 1×10⁶</div>
-      </div>
-      <div class="img-card">
-        <img src="https://images.unsplash.com/photo-1614728263952-84ea256f9ae3?w=600&q=80" alt="Velocity magnitude" />
-        <div class="img-label">Velocity magnitude — bluff body · Re 5×10⁵</div>
-      </div>
-      <div class="img-card">
-        <img src="https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=600&q=80" alt="Vorticity field" />
-        <div class="img-label">Vorticity — cylinder wake · Re 3×10⁴</div>
-      </div>
-      <div class="img-card">
-        <img src="https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=600&q=80" alt="Error map" />
-        <div class="img-label">Pointwise error vs. CFD reference</div>
-      </div>
+    <div style="overflow-x: auto; border-radius: 12px; border: 1px solid var(--blue-200); background: var(--white);">
+      <img
+        src="./src/images/aircraft_cfd_comparison.png"
+        alt="FluidFlow vs. CFD"
+        style="width: 100%; min-width: 700px; height: auto; display: block;"
+      />
     </div>
+    <p style="font-size: 13px; color: var(--muted); margin-top: 10px;">
+      Comparison between (ground truth) CFD pressure/friction coefficient fields (top panels) and the prediction generated by the DiT flow-matching model (bottom panels) for one particular operating condition with parameters π = 1×10⁵, M = 0.3 and AoA = −6.
+    </p>
   </section>
+  <p>
+    We evaluate FluidFlow on the 
+    <a href="https://www.codabench.org/competitions/7535/" target="_blank" style="color: var(--blue-600); text-decoration: none; border-bottom: 1px solid var(--blue-300);">ONERA 468 CRM challenge</a>,
+    a public benchmark for aerodynamic surrogate modeling on the Common Research Model geometry. 
+    The task consists of predicting the pressure coefficient C<sub>p</sub> and the friction coefficients 
+    C<sub>f,x</sub>, C<sub>f,y</sub>, C<sub>f,z</sub> over the aircraft surface across varying flight conditions, 
+    using the official train/test split provided by the challenge. We compare against the baseline MLP model 
+    supplied by the organizers — FluidFlow (DiT) outperforms it on every metric.
+  </p>
+  <div style="overflow-x: auto;">
+    <table class="results-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>R<sup>2</sup></th>
+          <th>R<sup>2</sup><sub>C<sub>p</sub></sub></th>
+          <th>R<sup>2</sup><sub>C<sub>f,x</sub></sub></th>
+          <th>R<sup>2</sup><sub>C<sub>f,y</sub></sub></th>
+          <th>R<sup>2</sup><sub>C<sub>f,z</sub></sub></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>MLP</td>
+          <td>0.956</td>
+          <td>0.972</td>
+          <td>0.944</td>
+          <td>0.951</td>
+          <td>0.957</td>
+        </tr>
+        <tr>
+          <td><em>FluidFlow</em> (DiT)</td>
+          <td><strong>0.965</strong></td>
+          <td><strong>0.974</strong></td>
+          <td><strong>0.959</strong></td>
+          <td><strong>0.960</strong></td>
+          <td><strong>0.965</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 </div>
 
 <!-- RESULTS — VIDEOS -->
 <div class="container">
-  <section class="fade-in">
-    <h2>Video Results</h2>
+  <section class="fade-in" id="animations">
+    <h2>Video Results Airfoil Case</h2>
     <p style="margin-bottom: 24px;">
-      The following clips show temporal roll-outs of FluidFlow predictions compared against ground-truth CFD simulations for three different test configurations.
+      The following clips demonstrate how FluidFlow carries out the denoising process for the airfoil Cp case. Initially, Gaussian noise is received, and the animations show how the model 'travels' from the noise distribution to the data distribution for cases in which it has not been trained. Predictions are then compared against ground-truth CFD simulations for five different test configurations.
     </p>
-    <div class="video-grid">
-      <div class="video-card">
-        <div class="v-thumb">
-          <img src="https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?w=600&q=60" alt="" />
-          <div class="play-sm"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+    <div class="carousel">
+      <div class="carousel-track" id="carouselTrack">
+        <div class="carousel-slide">
+          <video src="./src/videos/AirfoilAnimation1.mp4" controls muted loop playsinline autoplay style="object-fit:fill;"></video>
+          <div class="carousel-label">Airfoil simulation 1</div>
         </div>
-        <div class="v-label">Airfoil — angle of attack sweep</div>
-      </div>
-      <div class="video-card">
-        <div class="v-thumb">
-          <img src="https://images.unsplash.com/photo-1614728263952-84ea256f9ae3?w=600&q=60" alt="" />
-          <div class="play-sm"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+        <div class="carousel-slide">
+          <video src="./src/videos/AirfoilAnimation2.mp4" controls muted loop playsinline autoplay style="object-fit:fill;"></video>
+          <div class="carousel-label">Airfoil simulation 2</div>
         </div>
-        <div class="v-label">Bluff body — transient wake</div>
-      </div>
-      <div class="video-card">
-        <div class="v-thumb">
-          <img src="https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=600&q=60" alt="" />
-          <div class="play-sm"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+        <div class="carousel-slide">
+          <video src="./src/videos/AirfoilAnimation3.mp4" controls muted loop playsinline autoplay style="object-fit:fill;"></video>
+          <div class="carousel-label">Airfoil simulation 3</div>
         </div>
-        <div class="v-label">Cylinder — Re 10⁴ vortex shedding</div>
+        <div class="carousel-slide">
+          <video src="./src/videos/AirfoilAnimation4.mp4" controls muted loop playsinline autoplay style="object-fit:fill;"></video>
+          <div class="carousel-label">Airfoil simulation 4</div>
+        </div>
+        <div class="carousel-slide">
+          <video src="./src/videos/AirfoilAnimation5.mp4" controls muted loop playsinline autoplay style="object-fit:fill;"></video>
+          <div class="carousel-label">Airfoil simulation 5</div>
+        </div>
       </div>
+
+      <!-- Controls -->
+      <button class="carousel-btn carousel-prev" id="carouselPrev" aria-label="Previous">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button class="carousel-btn carousel-next" id="carouselNext" aria-label="Next">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+
+      <!-- Dots -->
+      <div class="carousel-dots" id="carouselDots"></div>
     </div>
   </section>
+  <p>
+    FluidFlow outperforms a standard multilayer perceptron (MLP). In the following table, we compare the metrics extracted for the test set of a well-optimized MLP via optuna with the 2 versions of FluidFlow (U-Net and DiT) 
+  </p>
+  <div style="overflow-x: auto;">
+    <table class="results-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>MSE</th>
+          <th>RMSE</th>
+          <th>MAE</th>
+          <th>MRE (%)</th>
+          <th>AE<sub>95</sub></th>
+          <th>AE<sub>99</sub></th>
+          <th>R<sup>2</sup></th>
+          <th>Relative L<sup>2</sup></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Vanilla MLP</td>
+          <td>0.00129</td>
+          <td>0.03598</td>
+          <td>0.01763</td>
+          <td>16.85219</td>
+          <td>0.05716</td>
+          <td>0.14176</td>
+          <td>0.99730</td>
+          <td>0.04911</td>
+        </tr>
+        <tr>
+          <td><em>FluidFlow</em> (U-Net)</td>
+          <td><strong>0.00009</strong></td>
+          <td>0.00961</td>
+          <td><strong>0.00240</strong></td>
+          <td>4.48810</td>
+          <td><strong>0.00761</strong></td>
+          <td><strong>0.03175</strong></td>
+          <td><strong>0.99981</strong></td>
+          <td>0.01325</td>
+        </tr>
+        <tr>
+          <td><em>FluidFlow</em> (DiT)</td>
+          <td><strong>0.00009</strong></td>
+          <td><strong>0.00953</strong></td>
+          <td>0.00249</td>
+          <td><strong>3.43723</strong></td>
+          <td>0.00764</td>
+          <td>0.03246</td>
+          <td><strong>0.99981</strong></td>
+          <td><strong>0.01314</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 </div>
 
 <!-- BIBTEX -->
@@ -196,9 +299,9 @@
 <footer>
   <p>
     © 2026 FluidFlow Authors ·
-    <a href="#">Paper</a> ·
-    <a href="#">Code</a> ·
-    <a href="#">Dataset</a>
+    <a href="#" target="_blank">Paper</a> ·
+    <a href="https://github.com/DavidRamosArchilla/FluidFlow" target="_blank">Code</a> ·
+    <a href="https://numath.dmae.upm.es/" target="_blank">About us</a>
   </p>
 </footer>
 
@@ -217,6 +320,35 @@
       setTimeout(() => { this.textContent = 'Copy'; }, 2000);
     });
   });
+  // ── Carousel ────────────────────────────────────────
+  const track   = document.getElementById('carouselTrack');
+  const slides  = track.querySelectorAll('.carousel-slide');
+  const dotsEl  = document.getElementById('carouselDots');
+  let current   = 0;
+
+  // Build dots
+  slides.forEach((_, i) => {
+    const dot = document.createElement('button');
+    dot.className = 'carousel-dot' + (i === 0 ? ' active' : '');
+    dot.addEventListener('click', () => goTo(i));
+    dotsEl.appendChild(dot);
+  });
+
+  function goTo(index) {
+    // Pause current video
+    slides[current].querySelector('video')?.pause();
+
+    current = (index + slides.length) % slides.length;
+    track.style.transform = `translateX(-${current * 100}%)`;
+
+    // Update dots
+    dotsEl.querySelectorAll('.carousel-dot').forEach((d, i) =>
+      d.classList.toggle('active', i === current)
+    );
+  }
+
+  document.getElementById('carouselPrev').addEventListener('click', () => goTo(current - 1));
+  document.getElementById('carouselNext').addEventListener('click', () => goTo(current + 1));
 </script>
 
 </body>
