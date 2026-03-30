@@ -366,3 +366,8 @@
       .hero { padding: 56px 20px 48px; }
       h2 { font-size: 1.4rem; }
     }
+    .authors sup, .affiliation sup {
+  font-size: 10px;
+  vertical-align: super;
+  color: var(--blue-600);
+}
