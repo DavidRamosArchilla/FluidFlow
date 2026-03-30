@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FluidFlow: Flow-Matching Generative Model for Fluid Dynamics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+
+<!-- HERO -->
+<header class="hero">
+  <div class="venue-tag">Preprint · 2025</div>
+  <h1><em>FluidFlow:</em> a flow-matching generative model<br>for fluid dynamics surrogates<br>on unstructured meshes</h1>
+
+  <div class="authors">
+    <span>David Ramos</span>
+    <span>Lucas Lacasa</span>
+    <span>Fermín Gutiérrez</span>
+    <span>Eusebio Valero</span>
+    <span>Gonzalo Rubio</span>
+  </div>
+  <p class="affiliation">Universidad Politécnica de Madrid &nbsp;·&nbsp; School of Aeronautics</p>
+
+  <div class="btn-group">
+    <a href="#" class="btn btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      Paper
+    </a>
+    <a href="#" class="btn btn-outline">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
+      arXiv
+    </a>
+    <a href="#" class="btn btn-outline">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+      Code
+    </a>
+    <a href="#" class="btn btn-outline">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+      Dataset
+    </a>
+  </div>
+</header>
+
+<!-- TEASER VIDEO -->
+<div class="container">
+<section class="fade-in" style="padding: 0 0 72px 0;">
+    <video
+        class="video-teaser"
+        src="src/videos/cp_animation_jet.mp4"
+        controls
+        autoplay
+        muted
+        loop
+        playsinline
+        style="width:100%; border-radius:14px; display:block;"
+    >
+        Your browser does not support the video tag.
+    </video>
+    <p class="video-caption">Overview of FluidFlow — generation process of the pressure coefficient on an unstructured aerodynamic mesh.</p>
+  </section>
+</div>
+
+<!-- ABSTRACT -->
+<div class="container">
+  <section class="fade-in">
+    <h2>Abstract</h2>
+    <div class="abstract-box">
+      <p>
+        Computational fluid dynamics (CFD) provides high-fidelity simulations of fluid flows but remains computationally expensive for many-query applications. In recent years deep supervised learning (DL) has been used to construct data-driven fluid-dynamic surrogate models. In this work we consider a different learning paradigm and embrace generative modelling as a framework for constructing scalable fluid-dynamics surrogate models. We introduce <em>FluidFlow:</em>, a generative model based on conditional flow-matching --a recent alternative to diffusion models that learns deterministic transport maps between noise and data distributions--. <em>FluidFlow:</em> is specifically designed to operate directly on CFD data defined on both structured and unstructured meshes alike, without the needs to perform any mesh interpolation pre-processing and preserving geometric fidelity. We assess the capabilities of <em>FluidFlow:</em>  using two different core neural network architectures --a U-Net and diffusion transformer (DiT)--, and condition their learning on physically meaningful parameters such as Mach number, angle of attack, or stagnation pressure --a proxy for Reynolds number--. The methodology is validated on two benchmark problems of increasing complexity: prediction of pressure coefficients along an airfoil boundary across different operating conditions, and prediction of pressure and friction coefficients over a full three-dimensional aircraft geometry discretized on a large unstructured mesh. In both cases, <em>FluidFlow:</em> outperform strong multilayer perceptron baselines, achieving significantly lower error metrics and improved generalisation across operating conditions. Notably, the transformer-based architecture enables scalable learning on large unstructured datasets while maintaining high predictive accuracy. These results demonstrate that flow-matching generative models provide an effective and flexible framework for surrogate modelling in fluid dynamics, with potential for realistic engineering and scientific applications.
+      </p>
+    </div>
+  </section>
+</div>
+
+<!-- METHOD -->
+<div class="container">
+  <section class="fade-in">
+    <h2>Method</h2>
+    <p>
+      Lorem ipsum dolor sit amet, consectetur adipiscing elit. Phasellus vehicula malesuada purus, at pharetra nisi consequat nec. Sed euismod, nulla vel varius tincidunt, felis odio fermentum erat, ac gravida libero arcu ut urna. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Aenean tempus eros sed ante pellentesque, nec posuere orci condimentum.
+    </p>
+    <p>
+      Fusce blandit fringilla ligula nec consequat. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Proin volutpat, ante a varius tincidunt, orci lacus posuere enim, vitae luctus lorem urna a nisi. Quisque quis velit vitae lorem pharetra molestie non at nisl. Cras vestibulum mi at urna molestie, et viverra neque semper.
+    </p>
+    <p>
+      Nulla facilisi. Integer quis arcu vitae erat pulvinar congue. Mauris faucibus leo nec ligula dapibus, ac pulvinar mi gravida. Phasellus malesuada libero vel ligula eleifend, in pharetra nisl maximus. Quisque blandit, nisi nec posuere dictum, eros libero pharetra nunc, sed aliquam mi tortor id lorem.
+    </p>
+
+    <!-- Method figure -->
+    <div style="margin-top: 32px;">
+      <img
+        src="https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=900&q=80"
+        alt="Pipeline overview"
+        style="width:100%; border-radius: 12px; border: 1px solid var(--blue-200); display:block;"
+      />
+      <p class="video-caption" style="margin-top: 10px;">Figure 1. Overview of the FluidFlow pipeline: mesh encoder, flow-matching backbone, and decoder.</p>
+    </div>
+  </section>
+</div>
+
+<!-- RESULTS — IMAGES -->
+<div class="container">
+  <section class="fade-in">
+    <h2>Qualitative Results</h2>
+    <p style="margin-bottom: 24px;">
+      FluidFlow faithfully reconstructs high-fidelity pressure and velocity fields across a wide range of Reynolds numbers and geometries directly on the native unstructured mesh, without any remeshing step.
+    </p>
+    <div class="img-grid">
+      <div class="img-card">
+        <img src="https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?w=600&q=80" alt="Pressure field — airfoil" />
+        <div class="img-label">Pressure field — NACA 0012 · Re 1×10⁶</div>
+      </div>
+      <div class="img-card">
+        <img src="https://images.unsplash.com/photo-1614728263952-84ea256f9ae3?w=600&q=80" alt="Velocity magnitude" />
+        <div class="img-label">Velocity magnitude — bluff body · Re 5×10⁵</div>
+      </div>
+      <div class="img-card">
+        <img src="https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=600&q=80" alt="Vorticity field" />
+        <div class="img-label">Vorticity — cylinder wake · Re 3×10⁴</div>
+      </div>
+      <div class="img-card">
+        <img src="https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=600&q=80" alt="Error map" />
+        <div class="img-label">Pointwise error vs. CFD reference</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- RESULTS — VIDEOS -->
+<div class="container">
+  <section class="fade-in">
+    <h2>Video Results</h2>
+    <p style="margin-bottom: 24px;">
+      The following clips show temporal roll-outs of FluidFlow predictions compared against ground-truth CFD simulations for three different test configurations.
+    </p>
+    <div class="video-grid">
+      <div class="video-card">
+        <div class="v-thumb">
+          <img src="https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?w=600&q=60" alt="" />
+          <div class="play-sm"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+        </div>
+        <div class="v-label">Airfoil — angle of attack sweep</div>
+      </div>
+      <div class="video-card">
+        <div class="v-thumb">
+          <img src="https://images.unsplash.com/photo-1614728263952-84ea256f9ae3?w=600&q=60" alt="" />
+          <div class="play-sm"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+        </div>
+        <div class="v-label">Bluff body — transient wake</div>
+      </div>
+      <div class="video-card">
+        <div class="v-thumb">
+          <img src="https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=600&q=60" alt="" />
+          <div class="play-sm"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+        </div>
+        <div class="v-label">Cylinder — Re 10⁴ vortex shedding</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- BIBTEX -->
+<div class="container">
+  <section class="fade-in">
+    <h2>BibTeX</h2>
+    <div class="bibtex-box">
+      <button class="copy-btn" id="copyBtn">Copy</button>
+      <pre id="bibtex">@article{ramos2025fluidflow,
+  title     = {FluidFlow: a flow-matching generative model for
+               fluid dynamics surrogates on unstructured meshes},
+  author    = {Ramos, David and Lacasa, Lucas and
+               Guti{\'{e}}rrez, Ferm{\'{i}}n and
+               Valero, Eusebio and Rubio, Gonzalo},
+  journal   = {arXiv preprint arXiv:2501.XXXXX},
+  year      = {2025},
+}</pre>
+    </div>
+  </section>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <p>
+    © 2025 FluidFlow Authors ·
+    <a href="#">Paper</a> ·
+    <a href="#">Code</a> ·
+    <a href="#">Dataset</a>
+  </p>
+</footer>
+
+<script>
+  // ── Intersection observer for fade-ins ──────────────
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.12 });
+
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  // ── BibTeX copy button ───────────────────────────────
+  document.getElementById('copyBtn').addEventListener('click', function () {
+    navigator.clipboard.writeText(document.getElementById('bibtex').textContent).then(() => {
+      this.textContent = 'Copied!';
+      setTimeout(() => { this.textContent = 'Copy'; }, 2000);
+    });
+  });
+</script>
+
+</body>
+</html>
