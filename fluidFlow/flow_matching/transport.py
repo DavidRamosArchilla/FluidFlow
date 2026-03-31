@@ -1,0 +1,643 @@
+import torch as th
+import torch
+import torch.nn as nn
+import numpy as np
+from scipy.stats import norm
+
+import enum
+
+from . import path
+from .integrators import ode, sde
+from ..sampling.dpm_solver import DPMS
+
+class ModelType(enum.Enum):
+    """
+    Which type of output the model predicts.
+    """
+
+    NOISE = enum.auto()  # the model predicts epsilon
+    SCORE = enum.auto()  # the model predicts \nabla \log p(x)
+    VELOCITY = enum.auto()  # the model predicts v(x)
+
+class PathType(enum.Enum):
+    """
+    Which type of path to use.
+    """
+
+    LINEAR = enum.auto()
+    GVP = enum.auto()
+    VP = enum.auto()
+
+class WeightType(enum.Enum):
+    """
+    Which type of weighting to use.
+    """
+
+    NONE = enum.auto()
+    VELOCITY = enum.auto()
+    LIKELIHOOD = enum.auto()
+
+
+def mean_flat(x):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return th.mean(x, dim=list(range(1, len(x.size()))))
+
+
+class Transport:
+
+    def __init__(
+        self,
+        *,
+        model_type,
+        path_type,
+        loss_type,
+        train_eps,
+        sample_eps,
+        use_cosine_loss=False,
+        use_lognorm=False,
+        partitial_train=None,
+        partial_ratio=1.0,
+        shift_lg=False,
+        equilibrium_matching=False,
+        energy_formulation="l2"
+    ):
+        path_options = {
+            PathType.LINEAR: path.ICPlan,
+            PathType.GVP: path.GVPCPlan,
+            PathType.VP: path.VPCPlan,
+        }
+
+        self.loss_type = loss_type
+        self.model_type = model_type
+        self.path_sampler = path_options[path_type]()
+        self.train_eps = train_eps
+        self.sample_eps = sample_eps
+        self.use_cosine_loss = use_cosine_loss
+        self.use_lognorm = use_lognorm
+        self.partitial_train = partitial_train
+        self.partial_ratio = partial_ratio
+        self.shift_lg = shift_lg
+        self.equilibrium_matching = equilibrium_matching
+        self.ebm = energy_formulation
+
+    def prior_logp(self, z):
+        '''
+            Standard multivariate normal prior
+            Assume z is batched
+        '''
+        shape = th.tensor(z.size())
+        N = th.prod(shape[1:])
+        _fn = lambda x: -N / 2. * np.log(2 * np.pi) - th.sum(x ** 2) / 2.
+        return th.vmap(_fn)(z)
+    
+
+    def check_interval(
+        self, 
+        train_eps, 
+        sample_eps, 
+        *, 
+        diffusion_form="SBDM",
+        sde=False, 
+        reverse=False, 
+        eval=False,
+        last_step_size=0.0,
+    ):
+        t0 = 0
+        t1 = 1
+        eps = train_eps if not eval else sample_eps
+        if (type(self.path_sampler) in [path.VPCPlan]):
+
+            t1 = 1 - eps if (not sde or last_step_size == 0) else 1 - last_step_size
+
+        elif (type(self.path_sampler) in [path.ICPlan, path.GVPCPlan]) \
+            and (self.model_type != ModelType.VELOCITY or sde): # avoid numerical issue by taking a first semi-implicit step
+
+            t0 = eps if (diffusion_form == "SBDM" and sde) or self.model_type != ModelType.VELOCITY else 0
+            t1 = 1 - eps if (not sde or last_step_size == 0) else 1 - last_step_size
+        
+        if reverse:
+            t0, t1 = 1 - t0, 1 - t1
+
+        return t0, t1
+
+    def sample_logit_normal(self, mu, sigma, size=1):
+        # Generate samples from the normal distribution
+        samples = norm.rvs(loc=mu, scale=sigma, size=size)
+        
+        # Transform samples to be in the range (0, 1) using the logistic function
+        samples = 1 / (1 + np.exp(-samples))
+
+        # Numpy to Tensor
+        samples = th.tensor(samples, dtype=th.float32)
+
+        return samples
+
+    def sample_in_range(self, mu, sigma, target_size, range_min=0, range_max=0.5):
+        samples = []
+        while len(samples) < target_size:
+            generated_samples = self.sample_logit_normal(mu, sigma, size=target_size)
+            filtered_samples = generated_samples[(generated_samples >= range_min) & (generated_samples <= range_max)]
+            samples.extend(filtered_samples)
+        
+        # If we have more than the target size, truncate the list
+        samples = samples[:target_size]
+        return th.tensor(samples)
+
+    def sample(self, x1, sp_timesteps=None, shifted_mu=0):
+        """
+        Sampling x0 & t based on shape of x1 (if needed). Shifted mu = log(3) = 1.0986??? https://arxiv.org/pdf/2506.15742
+          Args:
+            x1 - data point; [batch, *dim]
+        """
+        
+        x0 = th.randn_like(x1)
+        t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
+        if not self.use_lognorm:
+            if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
+                t = th.rand((x1.shape[0],)) * (self.partitial_train[1] - self.partitial_train[0]) + self.partitial_train[0]
+            else:
+                t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+        else:
+            # random < partial_ratio, then sample from the partial range
+            if not self.shift_lg:
+                if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
+                    t = self.sample_in_range(0, 1, x1.shape[0], range_min=self.partitial_train[0], range_max=self.partitial_train[1])
+                else:
+                    t = self.sample_logit_normal(0, 1, size=x1.shape[0]) * (t1 - t0) + t0
+            else:
+                assert self.partitial_train is None, "Shifted lognormal distribution is not compatible with partial training"
+                t = self.sample_logit_normal(shifted_mu, 1, size=x1.shape[0]) * (t1 - t0) + t0
+        
+        # overwrite t if sp_timesteps is provided (for validation)
+        if sp_timesteps is not None:
+            # uniform sampling between self.sp_timesteps[0] and self.sp_timesteps[1]
+            t = th.rand((x1.shape[0],)) * (sp_timesteps[1] - sp_timesteps[0]) + sp_timesteps[0]
+
+        t = t.to(device=x1.device, dtype=x1.dtype)
+        return t, x0, x1
+    
+    def disp_loss(self, z): # Dispersive Loss implementation (InfoNCE-L2 variant)
+        z = z.reshape((z.shape[0],-1)) # flatten
+        diff = th.nn.functional.pdist(z).pow(2)/z.shape[1] # normalize by dimension
+        diff = th.concat((diff, diff, th.zeros(z.shape[0]).cuda()))  # match JAX implementation of full BxB matrix
+        return th.log(th.exp(-diff).mean())
+
+    def get_ct(self, t): #ct implementation
+        interp = 0.8
+        start = 1.0
+        ct = th.minimum(start-(start-1)/(interp)*t, 1/(1-interp)-1/(1-interp)*t)*4
+        return ct
+
+    def training_losses(
+        self, 
+        model,  
+        x1, 
+        model_kwargs=None,
+        sp_timesteps=None,
+        shifted_mu=0,
+    ):
+        """Loss for training the score model
+        Args:
+        - model: backbone model; could be score, noise, or velocity
+        - x1: datapoint
+        - model_kwargs: additional arguments for the model
+        """
+        if model_kwargs is None:
+            model_kwargs = {}
+        
+        t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu)
+        t, xt, ut = self.path_sampler.plan(t, x0, x1)
+        xt.requires_grad = True
+        if self.equilibrium_matching:
+            ut = ut * self.get_ct(t)[:,None,None,None] # use energy-compatible target
+        model_output = model(xt, t, **model_kwargs)
+        disp_loss = 0
+        if self.equilibrium_matching:
+            # get intermediate activation and apply Dispersive Loss
+            # disp_loss = self.disp_loss(model_output)
+            # xt.requires_grad = True
+            x = model_output
+            if self.ebm == 'l2':
+                # print(x.shape)
+                E = -torch.sum(x**2, dim=(1,2))/2
+                if E.requires_grad:
+                    x = torch.autograd.grad([E.sum()],[xt],create_graph=True)[0] 
+            if self.ebm == 'dot':
+                E = torch.sum(x*xt, dim=(1,2))
+                if E.requires_grad:
+                    x = torch.autograd.grad([E.sum()],[xt],create_graph=True)[0]
+            if self.ebm == 'mean':
+                E = torch.sum(x*xt, dim=(1,2))
+                if E.requires_grad:
+                    x = torch.autograd.grad([E.sum()],[xt],create_graph=True)[0] 
+            model_output = x
+
+        B, *_, C = xt.shape
+        assert model_output.size() == (B, *xt.size()[1:-1], C)
+
+        terms = {}
+        terms['pred'] = model_output
+        if self.model_type == ModelType.VELOCITY:
+            terms['loss'] = mean_flat(((model_output - ut) ** 2))
+            if self.use_cosine_loss:
+                terms['cos_loss'] = mean_flat(1 - th.nn.functional.cosine_similarity(model_output, ut, dim=1))
+        else: 
+            _, drift_var = self.path_sampler.compute_drift(xt, t)
+            sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            if self.loss_type in [WeightType.VELOCITY]:
+                weight = (drift_var / sigma_t) ** 2
+            elif self.loss_type in [WeightType.LIKELIHOOD]:
+                weight = drift_var / (sigma_t ** 2)
+            elif self.loss_type in [WeightType.NONE]:
+                weight = 1
+            else:
+                raise NotImplementedError()
+            
+            if self.model_type == ModelType.NOISE:
+                terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
+            else:
+                terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
+        terms["loss"] += 0.5 * disp_loss
+        return terms
+    
+
+    def get_drift(
+        self
+    ):
+        """member function for obtaining the drift of the probability flow ODE"""
+        def score_ode(x, t, model, **model_kwargs):
+            drift_mean, drift_var = self.path_sampler.compute_drift(x, t)
+            model_output = model(x, t, **model_kwargs)
+            return (-drift_mean + drift_var * model_output) # by change of variable
+        
+        def noise_ode(x, t, model, **model_kwargs):
+            drift_mean, drift_var = self.path_sampler.compute_drift(x, t)
+            sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, x))
+            model_output = model(x, t, **model_kwargs)
+            score = model_output / -sigma_t
+            return (-drift_mean + drift_var * score)
+        
+        def velocity_ode(x, t, model, **model_kwargs):
+            model_output = model(x, t, **model_kwargs)
+            return model_output
+
+        if self.model_type == ModelType.NOISE:
+            drift_fn = noise_ode
+        elif self.model_type == ModelType.SCORE:
+            drift_fn = score_ode
+        else:
+            drift_fn = velocity_ode
+        
+        def body_fn(x, t, model, **model_kwargs):
+            model_output = drift_fn(x, t, model, **model_kwargs)
+            assert model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
+            return model_output
+
+        return body_fn
+    
+
+    def get_score(
+        self,
+    ):
+        """member function for obtaining score of 
+            x_t = alpha_t * x + sigma_t * eps"""
+        if self.model_type == ModelType.NOISE:
+            score_fn = lambda x, t, model, **kwargs: model(x, t, **kwargs) / -self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, x))[0]
+        elif self.model_type == ModelType.SCORE:
+            score_fn = lambda x, t, model, **kwagrs: model(x, t, **kwagrs)
+        elif self.model_type == ModelType.VELOCITY:
+            score_fn = lambda x, t, model, **kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **kwargs), x, t)
+        else:
+            raise NotImplementedError()
+        
+        return score_fn
+
+
+class Sampler:
+    """Sampler class for the transport model"""
+    def __init__(
+        self,
+        transport,
+    ):
+        """Constructor for a general sampler; supporting different sampling methods
+        Args:
+        - transport: an tranport object specify model prediction & interpolant type
+        """
+        
+        self.transport = transport
+        self.drift = self.transport.get_drift()
+        self.score = self.transport.get_score()
+    
+    def __get_sde_diffusion_and_drift(
+        self,
+        *,
+        diffusion_form="SBDM",
+        diffusion_norm=1.0,
+    ):
+
+        def diffusion_fn(x, t):
+            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm)
+            return diffusion
+        
+        sde_drift = \
+            lambda x, t, model, **kwargs: \
+                self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, model, **kwargs)
+    
+        sde_diffusion = diffusion_fn
+
+        return sde_drift, sde_diffusion
+    
+    def __get_last_step(
+        self,
+        sde_drift,
+        *,
+        last_step,
+        last_step_size,
+    ):
+        """Get the last step function of the SDE solver"""
+    
+        if last_step is None:
+            last_step_fn = \
+                lambda x, t, model, **model_kwargs: \
+                    x
+        elif last_step == "Mean":
+            last_step_fn = \
+                lambda x, t, model, **model_kwargs: \
+                    x + sde_drift(x, t, model, **model_kwargs) * last_step_size
+        elif last_step == "Tweedie":
+            alpha = self.transport.path_sampler.compute_alpha_t # simple aliasing; the original name was too long
+            sigma = self.transport.path_sampler.compute_sigma_t
+            last_step_fn = \
+                lambda x, t, model, **model_kwargs: \
+                    x / alpha(t)[0][0] + (sigma(t)[0][0] ** 2) / alpha(t)[0][0] * self.score(x, t, model, **model_kwargs)
+        elif last_step == "Euler":
+            last_step_fn = \
+                lambda x, t, model, **model_kwargs: \
+                    x + self.drift(x, t, model, **model_kwargs) * last_step_size
+        else:
+            raise NotImplementedError()
+
+        return last_step_fn
+
+    def sample_sde(
+        self,
+        *,
+        sampling_method="Euler",
+        diffusion_form="SBDM",
+        diffusion_norm=1.0,
+        last_step="Mean",
+        last_step_size=0.04,
+        num_steps=250,
+    ):
+        """returns a sampling function with given SDE settings
+        Args:
+        - sampling_method: type of sampler used in solving the SDE; default to be Euler-Maruyama
+        - diffusion_form: function form of diffusion coefficient; default to be matching SBDM
+        - diffusion_norm: function magnitude of diffusion coefficient; default to 1
+        - last_step: type of the last step; default to identity
+        - last_step_size: size of the last step; default to match the stride of 250 steps over [0,1]
+        - num_steps: total integration step of SDE
+        """
+
+        if last_step is None:
+            last_step_size = 0.0
+
+        sde_drift, sde_diffusion = self.__get_sde_diffusion_and_drift(
+            diffusion_form=diffusion_form,
+            diffusion_norm=diffusion_norm,
+        )
+
+        t0, t1 = self.transport.check_interval(
+            self.transport.train_eps,
+            self.transport.sample_eps,
+            diffusion_form=diffusion_form,
+            sde=True,
+            eval=True,
+            reverse=False,
+            last_step_size=last_step_size,
+        )
+
+        _sde = sde(
+            sde_drift,
+            sde_diffusion,
+            t0=t0,
+            t1=t1,
+            num_steps=num_steps,
+            sampler_type=sampling_method
+        )
+
+        last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
+            
+
+        def _sample(init, model, **model_kwargs):
+            xs = _sde.sample(init, model, **model_kwargs)
+            ts = th.ones(init.size(0), device=init.device) * t1
+            x = last_step_fn(xs[-1], ts, model, **model_kwargs)
+            xs.append(x)
+
+            assert len(xs) == num_steps, "Samples does not match the number of steps"
+
+            return xs
+
+        return _sample
+    
+    def sample_ode(
+        self,
+        *,
+        sampling_method="dopri5",
+        num_steps=50,
+        atol=1e-6,
+        rtol=1e-3,
+        reverse=False,
+        timestep_shift=0.0,
+    ):
+        """returns a sampling function with given ODE settings
+        Args:
+        - sampling_method: type of sampler used in solving the ODE; default to be Dopri5
+        - num_steps: 
+            - fixed solver (Euler, Heun): the actual number of integration steps performed
+            - adaptive solver (Dopri5): the number of datapoints saved during integration; produced by interpolation
+        - atol: absolute error tolerance for the solver
+        - rtol: relative error tolerance for the solver
+        - reverse: whether solving the ODE in reverse (data to noise); default to False
+        """
+        if reverse:
+            drift = lambda x, t, model, **kwargs: self.drift(x, th.ones_like(t) * (1 - t), model, **kwargs)
+        else:
+            drift = self.drift
+
+        t0, t1 = self.transport.check_interval(
+            self.transport.train_eps,
+            self.transport.sample_eps,
+            sde=False,
+            eval=True,
+            reverse=reverse,
+            last_step_size=0.0,
+        )
+
+        _ode = ode(
+            drift=drift,
+            t0=t0,
+            t1=t1,
+            sampler_type=sampling_method,
+            num_steps=num_steps,
+            atol=atol,
+            rtol=rtol,
+            timestep_shift=timestep_shift,
+        )
+        
+        return _ode.sample
+
+    def sample_ode_likelihood(
+        self,
+        *,
+        sampling_method="dopri5",
+        num_steps=50,
+        atol=1e-6,
+        rtol=1e-3,
+    ):
+        
+        """returns a sampling function for calculating likelihood with given ODE settings
+        Args:
+        - sampling_method: type of sampler used in solving the ODE; default to be Dopri5
+        - num_steps: 
+            - fixed solver (Euler, Heun): the actual number of integration steps performed
+            - adaptive solver (Dopri5): the number of datapoints saved during integration; produced by interpolation
+        - atol: absolute error tolerance for the solver
+        - rtol: relative error tolerance for the solver
+        """
+        def _likelihood_drift(x, t, model, **model_kwargs):
+            x, _ = x
+            eps = th.randint(2, x.size(), dtype=th.float, device=x.device) * 2 - 1
+            t = th.ones_like(t) * (1 - t)
+            with th.enable_grad():
+                x.requires_grad = True
+                grad = th.autograd.grad(th.sum(self.drift(x, t, model, **model_kwargs) * eps), x)[0]
+                logp_grad = th.sum(grad * eps, dim=tuple(range(1, len(x.size()))))
+                drift = self.drift(x, t, model, **model_kwargs)
+            return (-drift, logp_grad)
+        
+        t0, t1 = self.transport.check_interval(
+            self.transport.train_eps,
+            self.transport.sample_eps,
+            sde=False,
+            eval=True,
+            reverse=False,
+            last_step_size=0.0,
+        )
+
+        _ode = ode(
+            drift=_likelihood_drift,
+            t0=t0,
+            t1=t1,
+            sampler_type=sampling_method,
+            num_steps=num_steps,
+            atol=atol,
+            rtol=rtol,
+        )
+
+        def _sample_fn(x, model, **model_kwargs):
+            init_logp = th.zeros(x.size(0)).to(device=x.device, dtype=x.dtype)
+            input = (x, init_logp)
+            drift, delta_logp = _ode.sample(input, model, **model_kwargs)
+            drift, delta_logp = drift[-1], delta_logp[-1]
+            prior_logp = self.transport.prior_logp(drift)
+            logp = prior_logp - delta_logp
+            return logp, drift
+
+        return _sample_fn
+
+class FlowMatching(nn.Module):
+    def __init__(
+        self,
+        sampler,
+        neural_net,
+        input_size,
+        cond_scale=1,
+        shifted_mu=0, 
+        sampler_atol=1e-6,
+        sampler_rtol=1e-3,
+        num_sampling_steps=50,
+        sampler_timestep_shift=0.0,
+        sampling_method="euler",
+        reverse_sampling=False
+    ):
+        super().__init__()
+        # core objects
+        self.neural_net = neural_net
+        self.sampler = sampler
+        # if the input is 1D, create a tuple anyway for consistency on self.sample
+        self.input_size = input_size if not isinstance(input_size, int) else (input_size,)
+        # sampler configuration saved for use in self.sample()
+        self.cond_scale = cond_scale
+        self.sampler_atol = sampler_atol
+        self.sampler_rtol = sampler_rtol
+        self.num_sampling_steps = num_sampling_steps
+        self.sampler_timestep_shift = sampler_timestep_shift
+        self.sampling_method = sampling_method
+        self.reverse_sampling = reverse_sampling
+        self.shifted_mu = shifted_mu
+        # things to keep the same interface with GaussianDiffusion and be able to use the Trainer
+        self.channels = neural_net.channels
+        self.cond_dim = neural_net.cond_dim
+
+    def forward(self, x, classes=None):
+        terms = self.sampler.transport.training_losses(
+            self.neural_net,
+            x,
+            shifted_mu=self.shifted_mu,
+            model_kwargs={"classes": classes}
+        )
+        loss = terms["loss"].mean()
+        if "cos_loss" in terms:
+            loss += terms["cos_loss"].mean()
+        return loss
+
+    def sample(self, classes, return_all_steps=False, **model_kwargs):
+        sample_fn = self.sampler.sample_ode(
+            sampling_method=self.sampling_method,
+            num_steps=self.num_sampling_steps,
+            atol=self.sampler_atol,
+            rtol=self.sampler_rtol,
+            reverse=self.reverse_sampling,
+            timestep_shift=self.sampler_timestep_shift,
+        )
+        batch_size = classes.shape[0]
+        z = torch.randn(batch_size, self.neural_net.channels, *self.input_size, device=classes.device)
+        model_fn = self.neural_net.forward_with_cond_scale
+        model_kwargs["classes"] = classes
+        if "cond_scale" not in model_kwargs:
+            model_kwargs["cond_scale"] = self.cond_scale
+        samples = sample_fn(z, model_fn, **model_kwargs)
+        if return_all_steps:
+            return samples
+        return samples[-1]
+
+    def sample_flow_dpm(self, classes, order=2, flow_shift=1.0, **model_kwargs):
+        batch_size = classes.shape[0]
+        z = torch.randn(batch_size, self.neural_net.channels, *self.input_size, device=classes.device)
+        null_cond = self.neural_net.null_classes_emb.repeat(batch_size, 1) # esto solo funciona para la unet
+        # repeat null cond to match batch size
+        model_kwargs["uncondition"] = null_cond
+        # print(classes.shape, null_cond.shape)
+        dpm_solver = DPMS(
+            self.neural_net.forward_with_dpmsolver,
+            condition=classes,
+            uncondition=null_cond,
+            cfg_scale=self.cond_scale,
+            model_type="flow",
+            model_kwargs=model_kwargs,
+            schedule="FLOW",
+        )
+        denoised = dpm_solver.sample(
+            z,
+            steps=self.num_sampling_steps,
+            order=order,
+            skip_type="time_uniform_flow",
+            method="multistep",
+            flow_shift=flow_shift,
+        )
+        return denoised
+

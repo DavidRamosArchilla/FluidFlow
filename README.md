@@ -8,7 +8,6 @@
 
 [![Paper](https://img.shields.io/badge/Paper-coming%20soon-lightgrey?style=flat-square)](https://github.com/DavidRamosArchilla/FluidFlow)
 [![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b?style=flat-square)](https://github.com/DavidRamosArchilla/FluidFlow)
-[![Code](https://img.shields.io/badge/GitHub-Code-blue?style=flat-square&logo=github)](https://github.com/DavidRamosArchilla/FluidFlow)
 [![Project Page](https://img.shields.io/badge/Project-Page-2e8fd6?style=flat-square)](https://DavidRamosArchilla.github.io/FluidFlow)
 
 ---
@@ -83,7 +82,7 @@ FluidFlow outperforms a standard multilayer perceptron (MLP). The following anim
   </tr>
 </table>
 
-> **Note:** GitHub does not render `.mp4` files inline. Please visit the [project page](https://DavidRamosArchilla.github.io/FluidFlow) to watch the animations.
+> **Note:** If the animations take to long to load, please visit the [project page](https://DavidRamosArchilla.github.io/FluidFlow) to watch them.
 
 In the following table we compare the metrics extracted for the test set of a well-optimized MLP (tuned via Optuna) with the two versions of FluidFlow (U-Net and DiT):
 
