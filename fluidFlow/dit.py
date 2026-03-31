@@ -296,20 +296,26 @@ class DiT(nn.Module):
         if isinstance(input_size, int):
             self.x_embedder = PatchEmbed1D(input_size, patch_size, in_channels, hidden_size)
             self.final_layer = FinalLayer1D(hidden_size, patch_size, self.out_channels, bias=use_bias)
+            self.is_1d = True
             print("Creating 1D DiT")
         else:
             assert isinstance(input_size, tuple) and len(input_size) == 2
             self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size)
             self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels, bias=use_bias)
+            self.is_1d = False
             print("Creating 2D DiT")
 
         if use_rope:
-            head_dim = hidden_size // num_heads
-            seq_len = input_size // patch_size
-            self.feat_rope = VisionRotaryEmbeddingFast(
-                dim=head_dim,
-                max_seq_len=seq_len,
-            )
+            if self.is_1d:
+                head_dim = hidden_size // num_heads
+                seq_len = input_size // patch_size
+                self.feat_rope = VisionRotaryEmbeddingFast(
+                    dim=head_dim,
+                    max_seq_len=seq_len,
+                )
+            else:
+                print("rope is only implemente for 1D DiT for the moment. Setting use_rope to False.")
+                self.feat_rope = None
         else:
             self.feat_rope = None
 
@@ -381,16 +387,26 @@ class DiT(nn.Module):
     
     def unpatchify(self, x):
         """
-        x: (B, num_patches, patch_size * C)
-        output: (B, C, S)
+        x: (B, num_patches, patch_size * C) for 1D or (B, num_patches, patch_size^2 * C) for 2D
+        output: (B, C, S) for 1D or (B, C, H, W) for 2D
         """
         c = self.out_channels
         p = self.patch_size
         num_patches = x.shape[1]
-        # TODO: no se si esto ira para 2d. Efectivamente, no.
-        x = x.reshape(x.shape[0], num_patches, p, c)  # (B, num_patches, patch_size, C)
-        x = x.permute(0, 3, 1, 2)  # (B, C, num_patches, patch_size)
-        x = x.reshape(x.shape[0], c, num_patches * p)  # (B, C, S)
+        
+        if self.is_1d:
+            # 1D case: output (B, C, S)
+            x = x.reshape(x.shape[0], num_patches, p, c)  # (B, num_patches, patch_size, C)
+            x = x.permute(0, 3, 1, 2)  # (B, C, num_patches, patch_size)
+            x = x.reshape(x.shape[0], c, num_patches * p)  # (B, C, S)
+        else:
+            # 2D case: output (B, C, H, W)
+            h = w = int(x.shape[1] ** 0.5)
+            assert h * w == x.shape[1]
+            x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+            x = torch.einsum('nhwpqc->nchpwq', x)
+            x = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+        
         return x
 
     def forward(self, x, t, classes, return_act=False, *args, **kwargs):

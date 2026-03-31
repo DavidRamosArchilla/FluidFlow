@@ -8,7 +8,6 @@ import enum
 
 from . import path
 from .integrators import ode, sde
-from ..sampling.dpm_solver import DPMS
 
 class ModelType(enum.Enum):
     """
@@ -614,30 +613,3 @@ class FlowMatching(nn.Module):
         if return_all_steps:
             return samples
         return samples[-1]
-
-    def sample_flow_dpm(self, classes, order=2, flow_shift=1.0, **model_kwargs):
-        batch_size = classes.shape[0]
-        z = torch.randn(batch_size, self.neural_net.channels, *self.input_size, device=classes.device)
-        null_cond = self.neural_net.null_classes_emb.repeat(batch_size, 1) # esto solo funciona para la unet
-        # repeat null cond to match batch size
-        model_kwargs["uncondition"] = null_cond
-        # print(classes.shape, null_cond.shape)
-        dpm_solver = DPMS(
-            self.neural_net.forward_with_dpmsolver,
-            condition=classes,
-            uncondition=null_cond,
-            cfg_scale=self.cond_scale,
-            model_type="flow",
-            model_kwargs=model_kwargs,
-            schedule="FLOW",
-        )
-        denoised = dpm_solver.sample(
-            z,
-            steps=self.num_sampling_steps,
-            order=order,
-            skip_type="time_uniform_flow",
-            method="multistep",
-            flow_shift=flow_shift,
-        )
-        return denoised
-
