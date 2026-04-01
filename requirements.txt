@@ -1,4 +1,9 @@
 einops
-torch
+torch>=2.6
 accelerate
 torchdiffeq
+timm
+ema_pytorch
+tqdm
+matplotlib
+scipy

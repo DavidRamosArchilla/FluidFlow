@@ -249,10 +249,9 @@ class Attention(Module):
         if self.qk_norm:
             q = self.q_norm(q.to(self.q_norm.weight.dtype)).to(dtype)
             k = self.k_norm(k.to(self.k_norm.weight.dtype)).to(dtype)
-        TODO: n y c estan al reves, ver que hacer con esto porque esta funcionando mejor asi
-        q, k, v = map(lambda t: rearrange(t, 'b n (h c) -> b h c n', h = self.heads), (q, k, v))
-        out = F.scaled_dot_product_attention(q, k, v) # this outputs (b, h, c, n)
-        out = rearrange(out, 'b h c n -> b (h c) n')
+        q, k, v = map(lambda t: rearrange(t, 'b n (h c) -> b h n c', h = self.heads), (q, k, v))
+        out = F.scaled_dot_product_attention(q, k, v) # this outputs (b, h, n, c)
+        out = rearrange(out, 'b h n c -> b (h c) n')
 
         return self.to_out(out)
 
