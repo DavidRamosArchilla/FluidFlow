@@ -14,6 +14,104 @@
 
 <video src="https://github.com/user-attachments/assets/6730b733-7352-4ac2-8f4b-aa0821bf3394" width="100%" controls autoplay loop></video>
 
+## Usage
+
+Look at `scripts/` to see more examples.
+
+```python
+from data.generate_synthetic_data import AnalyticalFunctionDataset
+from fluidFlow.dit import DiT
+from fluidFlow.trainer import Trainer
+from fluidFlow.flow_matching import create_flow_matching
+
+import numpy as np
+import torch
+from torch.utils.data import TensorDataset
+
+# 1. generate synthetic dataset / load you own dataset here
+data_resolution = (32, 32)
+generator = AnalyticalFunctionDataset(nx=data_resolution[0], ny=data_resolution[1], x_range=(0, 2*np.pi), y_range=(0, 2*np.pi))
+solutions_random, parameters_random = generator.generate_dataset(
+    n_samples=1000,
+    alpha1_range=(-2.0, 2.0),
+    alpha2_range=(-2.0, 2.0)
+)
+# add channel dimension to solutions
+solutions_random = solutions_random[:, None, :, :]
+n_train = int(0.8 * len(solutions_random))
+train_data = TensorDataset(torch.from_numpy(solutions_random[:n_train]).float(), torch.from_numpy(parameters_random[:n_train]).float())
+test_data = TensorDataset(torch.from_numpy(solutions_random[n_train:]).float(), torch.from_numpy(parameters_random[n_train:]).float())
+
+# 2. Define the DiT model and the flow-matching training procedure
+model = DiT(
+    depth=6,
+    hidden_size=128,
+    patch_size=1,
+    num_heads=4,
+    input_size=data_resolution, # dataset grid size
+    cond_dim=2, # number of parameters (alpha1, alpha2)
+    class_dropout_prob=0.2,
+    in_channels=1,
+    learn_sigma=False,
+    use_swiglu=True,
+    use_rope=True,
+    # qk_norm=True, # when bf16 training
+    attn_type="vanilla",  # window, linear, vanilla
+    mlp_ratio=2.5,
+)
+
+flow_matching = create_flow_matching(
+    neural_net=model,
+    input_size=data_resolution,
+    cond_scale=2.0,
+    sampling_method="euler",
+    num_sampling_steps=400,
+)
+
+# 3. Define trainer and training configuration
+results_folder = './results'
+train_steps = 100000
+trainer = Trainer(
+    flow_matching,
+    dataset=train_data,
+    dataset_test=test_data,
+    train_batch_size=64,
+    train_lr=2e-4,
+    train_num_steps=train_steps,  # total training steps
+    gradient_accumulate_every=1,  # gradient accumulation steps
+    ema_decay=0.995,  # exponential moving average decay
+    # amp=True,     # turn on mixed precision for faster training and reduced memory usage
+    # mixed_precision_type='bf16',
+    results_folder=results_folder,  # folder to save results to
+    save_and_sample_every=20000,
+    eta_min_scheduler=1e-6,
+    max_grad_norm=1.0,
+    use_cpu=True, # JUST FOR TESTING, SET TO FALSE FOR ACTUAL TRAINING
+    compile_model=True,
+    split_batches=True
+)
+
+# 4. Train the model
+trainer.train()
+```
+Samples and model checkpoints will be logged to `./results` periodically
+
+### Multi-GPU Training
+
+The `Trainer` class is now equipped with <a href="https://huggingface.co/docs/accelerate/en/package_reference/accelerator">🤗 Accelerator</a>. You can easily do multi-gpu training in two steps using their `accelerate` CLI
+
+At the project root directory, run
+
+```python
+$ accelerate config
+```
+
+Then, in the same directory
+
+```python
+$ accelerate launch train.py
+```
+
 ## Abstract
 
 Computational fluid dynamics (CFD) provides high-fidelity simulations of fluid flows but remains computationally expensive for many-query applications. In recent years deep supervised learning (DL) has been used to construct data-driven fluid-dynamic surrogate models. In this work we consider a different learning paradigm and embrace generative modelling as a framework for constructing scalable fluid-dynamics surrogate models.
