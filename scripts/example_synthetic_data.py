@@ -25,8 +25,14 @@ print(f"Generated {len(solutions_random)} samples with random parameter sampling
 # add channel dimension to solutions
 solutions_random = solutions_random[:, None, :, :]
 n_train = int(0.8 * len(solutions_random))
-train_data = TensorDataset(torch.from_numpy(solutions_random[:n_train]).float(), torch.from_numpy(parameters_random[:n_train]).float())
-test_data = TensorDataset(torch.from_numpy(solutions_random[n_train:]).float(), torch.from_numpy(parameters_random[n_train:]).float())
+# standardize the data
+solutions_train = torch.from_numpy(solutions_random[:n_train]).float()
+solutions_test = torch.from_numpy(solutions_random[n_train:]).float()
+train_mean, train_std = solutions_train.mean(), solutions_train.std()
+solutions_train = (solutions_train - train_mean) / train_std
+solutions_test = (solutions_test - train_mean) / train_std
+train_data = TensorDataset(solutions_train, torch.from_numpy(parameters_random[:n_train]).float())
+test_data = TensorDataset(solutions_test, torch.from_numpy(parameters_random[n_train:]).float())
 
 model = DiT(
     depth=6,
@@ -37,10 +43,7 @@ model = DiT(
     cond_dim=2, # number of parameters (alpha1, alpha2)
     class_dropout_prob=0.2,
     in_channels=1,
-    learn_sigma=False,
-    # use_bias=False,
     use_swiglu=True,
-    use_rope=True,
     # qk_norm=True, # when bf16 training
     attn_type="vanilla",  # window, linear, vanilla
     mlp_ratio=2.5,
@@ -79,3 +82,10 @@ trainer = Trainer(
 
 trainer.train()
 
+# Evaluate the model on the test set and save predictions
+trainer.ema.ema_model.eval()
+# this will sample with multiple gpus, if available
+samples, seqs = trainer.eval_model(test_data, batch_size=16, use_autocast=True)
+
+if trainer.accelerator.is_main_process:
+    torch.save(samples, f"{results_folder}/test_predictions_ema.pt")
