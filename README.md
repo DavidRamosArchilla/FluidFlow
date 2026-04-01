@@ -158,6 +158,8 @@ We evaluate FluidFlow on the [ONERA 468 CRM challenge](https://www.codabench.org
 
 ---
 
+To reproduce this results, download the <a href="https://entrepot.recherche.data.gouv.fr/file.xhtml?persistentId=doi:10.57745/Z9LDY8&version=2.0">data</a> and run the `scripts/train_onera_crm.py` script. 
+
 ## Airfoil Results
 
 FluidFlow outperforms a standard multilayer perceptron (MLP). The following animations demonstrate how FluidFlow carries out the denoising process for the airfoil Cp case — starting from Gaussian noise and travelling to the data distribution for unseen test cases.
