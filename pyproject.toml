@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fluidflow"
+authors = [{ name = "David Ramos", email = "david.ramos.archilla@upm.es" }]
+version = "0.1.0"
+description = "FluidFlow: models and training utilities for flow matching and diffusion"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "einops",
+    "torch>=2.6",
+    "accelerate",
+    "torchdiffeq",
+    "timm",
+    "ema_pytorch",
+    "tqdm",
+    "matplotlib",
+    "scipy",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fluidFlow*"]

@@ -114,7 +114,7 @@ $ accelerate launch train.py
 
 ### Flash Attention 4
 
-The DiT architecture can be trained with Flash Attention 4 for improved speed and memory efficiency. To enable it, you need to <a href="https://github.com/Dao-AILab/flash-attention">install</a> it and FluidFlow will autmatically use it if available.
+The DiT architecture can be trained with Flash Attention 4 for improved speed and memory efficiency. To enable it, you need to <a href="https://github.com/Dao-AILab/flash-attention">install</a> it and FluidFlow will autmatically use it if available. As an important note, Flash Attention 4 doesn't with with values of `head_dim` smaller than 128.
 
 
 ## Abstract
