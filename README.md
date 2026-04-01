@@ -112,6 +112,11 @@ Then, in the same directory
 $ accelerate launch train.py
 ```
 
+### Flash Attention 4
+
+The DiT architecture can be trained with Flash Attention 4 for improved speed and memory efficiency. To enable it, you need to <a href="https://github.com/Dao-AILab/flash-attention">install</a> it and FluidFlow will autmatically use it if available.
+
+
 ## Abstract
 
 Computational fluid dynamics (CFD) provides high-fidelity simulations of fluid flows but remains computationally expensive for many-query applications. In recent years deep supervised learning (DL) has been used to construct data-driven fluid-dynamic surrogate models. In this work we consider a different learning paradigm and embrace generative modelling as a framework for constructing scalable fluid-dynamics surrogate models.
