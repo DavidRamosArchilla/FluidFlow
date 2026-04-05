@@ -112,6 +112,15 @@ Then, in the same directory
 $ accelerate launch train.py
 ```
 
+## Try it yourself
+
+We provide a self-contained Kaggle notebook where you can explore flow-matching with a lightweight example trained on the **Fashion MNIST** dataset — a great starting point to understand the method before diving into the full CFD pipeline.
+
+[![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/code/davidramos18/flow-matching-generative-model-fluidflow-torch)
+
+The notebook trains a conditional flow-matching model to generate clothing images from Gaussian noise, one per Fashion MNIST label:
+
+
 ### Flash Attention 4
 
 The DiT architecture can be trained with Flash Attention 4 for improved speed and memory efficiency. To enable it, you need to <a href="https://github.com/Dao-AILab/flash-attention">install</a> it and FluidFlow will autmatically use it if available. As an important note, Flash Attention 4 doesn't with with values of `head_dim` smaller than 128.
