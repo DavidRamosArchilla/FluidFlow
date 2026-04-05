@@ -114,12 +114,12 @@ $ accelerate launch train.py
 
 ## Try it yourself
 
-We provide a self-contained Kaggle notebook where you can explore flow-matching with a lightweight example trained on the **Fashion MNIST** dataset — a great starting point to understand the method before diving into the full CFD pipeline.
+We provide a self-contained Kaggle notebook where you can explore flow-matching with a lightweight example trained on the **Fashion MNIST** <a href="https://www.kaggle.com/datasets/zalando-research/fashionmnist">dataset</a> — a great starting point to understand the method before diving into the full CFD pipeline.
 
 [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/code/davidramos18/flow-matching-generative-model-fluidflow-torch)
 
-The notebook trains a conditional flow-matching model to generate clothing images from Gaussian noise, one per Fashion MNIST label:
-
+The notebook trains a conditional flow-matching model to generate clothing images from Gaussian noise. Here is an example with one generation per Fashion MNIST label:
+<img width="967" height="393" alt="image" src="https://github.com/user-attachments/assets/72794bd1-8786-4730-8dec-417de7014a8d" />
 
 ### Flash Attention 4
 
