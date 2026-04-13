@@ -7,7 +7,7 @@
 ³ Center for Computational Simulation, Universidad Politécnica de Madrid  
 
 [![Paper](https://img.shields.io/badge/Paper-coming%20soon-lightgrey?style=flat-square)](https://github.com/DavidRamosArchilla/FluidFlow)
-[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b?style=flat-square)](https://github.com/DavidRamosArchilla/FluidFlow)
+[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b?style=flat-square)](https://arxiv.org/abs/2604.08586)
 [![Project Page](https://img.shields.io/badge/Project-Page-2e8fd6?style=flat-square)](https://DavidRamosArchilla.github.io/FluidFlow)
 
 ---
@@ -204,14 +204,14 @@ In the following table we compare the metrics extracted for the test set of a we
 If you find this work useful, please consider citing:
 
 ```bibtex
-@article{ramos2025fluidflow,
-  title     = {FluidFlow: a flow-matching generative model for
-               fluid dynamics surrogates on unstructured meshes},
-  author    = {Ramos, David and Lacasa, Lucas and
-               Guti{\'e}rrez, Ferm{\'i}n and
-               Valero, Eusebio and Rubio, Gonzalo},
-  journal   = {arXiv preprint arXiv:2501.XXXXX},
-  year      = {2025},
+@misc{ramos2026fluidflowflowmatchinggenerativemodel,
+      title={FluidFlow: a flow-matching generative model for fluid dynamics surrogates on unstructured meshes}, 
+      author={David Ramos and Lucas Lacasa and Ferm{\'i}n Guti{\'e}rrez and Eusebio Valero and Gonzalo Rubio},
+      year={2026},
+      eprint={2604.08586},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2604.08586}, 
 }
 ```
 
