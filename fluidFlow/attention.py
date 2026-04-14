@@ -123,6 +123,15 @@ class LinearAttention(nn.Module):
             q = self.q_norm(q.to(self.q_norm.weight.dtype))
             k = self.k_norm(k.to(self.k_norm.weight.dtype)) # (B, N, C)
         
+        # apply rope first, since it assumes that sequence dimenstion (N) is in the position -2
+        if rope is not None:
+            q = rearrange(q, 'b n (h d) -> b h n d', h=self.heads)  # (B, h, d, N_q)
+            k = rearrange(k, 'b n (h d) -> b h n d', h=self.heads)  # (B, h, d, N_kv)
+            q = rope(q)
+            k = rope(k)
+            q = rearrange(q, 'b h n d -> b n (h d)')  # (B, N_q, C)
+            k = rearrange(k, 'b h n d -> b n (h d)', h=self.heads)  # (B, N_kv, C)
+        
         # Now reshape into multi-head format
         q = rearrange(q, 'b n (h d) -> b h d n', h=self.heads)  # (B, h, d, N)
         k = rearrange(k, 'b n (h d) -> b h d n', h=self.heads)  # (B, h, d, N)
