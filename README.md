@@ -18,6 +18,12 @@
 
 Look at `scripts/` to see more examples.
 
+```bash
+pip install fluidflow
+```
+
+You can either clone the repo and install the depencencies, or directly install FluidFlow with pip:
+
 ```python
 from data.generate_synthetic_data import AnalyticalFunctionDataset
 from fluidFlow.dit import DiT
