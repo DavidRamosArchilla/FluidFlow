@@ -85,7 +85,8 @@ class Trainer(object):
         dataset_test=None,
         eta_min_scheduler=None,
         compile_model=False,
-        use_fsdop=False
+        use_fsdop=False,
+        use_muon=False
     ):
         super().__init__()
 
@@ -137,12 +138,31 @@ class Trainer(object):
         # else:
         #     self.opts = [AdamW(diffusion_model.parameters(), lr=train_lr, betas=adam_betas, weight_decay=1e-4, fused=True)]
         eps = 1e-6 if mixed_precision_type == 'fp16' or mixed_precision_type == 'bf16' else 1e-8
-        self.opt = AdamW(diffusion_model.parameters(), lr=train_lr, betas=adam_betas, weight_decay=1e-2, fused=True, eps=eps)
+        if use_muon:
+            # Separate parameters for Muon (2D) and AdamW (1D)
+            neural_net = diffusion_model.neural_net if hasattr(diffusion_model, "neural_net") else diffusion_model
+            muon_params = neural_net.get_2d_params()
+            adam_params = neural_net.get_1d_params()
+            self.opt_muon = torch.optim.Muon(muon_params, lr=train_lr, weight_decay=1e-3)
+            self.opt_adam = AdamW(adam_params, lr=train_lr, betas=adam_betas, weight_decay=1e-2, fused=True, eps=eps)
+            self.opts = [self.opt_muon, self.opt_adam]
+            self.use_muon = True
+        else:
+            self.opt = AdamW(diffusion_model.parameters(), lr=train_lr, betas=adam_betas, weight_decay=1e-2, fused=True, eps=eps)
+            self.opts = [self.opt]
+            self.use_muon = False
         # cosine annealing lr scheduler
         self.use_lr_scheduler = eta_min_scheduler is not None
         if self.use_lr_scheduler:
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt, T_max=self.train_num_steps, eta_min=eta_min_scheduler)
-            self.scheduler = self.accelerator.prepare_scheduler(self.scheduler)
+            if self.use_muon:
+                # Use schedulers for both optimizers
+                self.scheduler_muon = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt_muon, T_max=self.train_num_steps, eta_min=eta_min_scheduler)
+                self.scheduler_adam = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt_adam, T_max=self.train_num_steps, eta_min=eta_min_scheduler)
+                self.scheduler_muon = self.accelerator.prepare_scheduler(self.scheduler_muon)
+                self.scheduler_adam = self.accelerator.prepare_scheduler(self.scheduler_adam)
+            else:
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt, T_max=self.train_num_steps, eta_min=eta_min_scheduler)
+                self.scheduler = self.accelerator.prepare_scheduler(self.scheduler)
 
         # if self.accelerator.is_main_process:
         self.ema = EMA(diffusion_model, beta = ema_decay, update_every = ema_update_every)
@@ -156,11 +176,13 @@ class Trainer(object):
 
         # prepare model, dataloader, optimizer with accelerator
         self.cond_dim = diffusion_model.cond_dim
-        self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
+        if self.use_muon:
+            self.model, self.opt_muon, self.opt_adam = self.accelerator.prepare(self.model, self.opt_muon, self.opt_adam)
+        else:
+            self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
         if compile_model:
             print("Compiling model...")
             self.model = torch.compile(self.model) # mode="reduce-overhead"
-            # self.model.neural_net = torch.compile(self.model.neural_net) # mode="reduce-overhead"
             print("Model compiled")
 
         self.loss_history = []
@@ -171,14 +193,19 @@ class Trainer(object):
         return self.accelerator.device
 
     def save(self, milestone, model_state_dict):
-        lr = self.opt.param_groups[0]['lr']
+        if self.use_muon:
+            lr_muon = self.opt_muon.param_groups[0]['lr']
+            lr_adam = self.opt_adam.param_groups[0]['lr']
+            lr = (lr_muon, lr_adam)  # Tuple for both
+        else:
+            lr = self.opt.param_groups[0]['lr']
 
         data = {
             'step': self.step,
             'model': model_state_dict,  # Use the passed dictionary
-            # 'opts': [opt.state_dict() for opt in self.opts],
-            'opt': self.opt.state_dict(),
-            'scheduler': self.scheduler.state_dict() if self.use_lr_scheduler else None,
+            'use_muon': self.use_muon,
+            'opts': [opt.state_dict() for opt in self.opts],
+            'schedulers': [self.scheduler_muon.state_dict(), self.scheduler_adam.state_dict()] if self.use_muon and self.use_lr_scheduler else ([self.scheduler.state_dict()] if self.use_lr_scheduler else None),
             'ema': self.ema.state_dict(),
             'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
             'lr': lr,
@@ -206,10 +233,18 @@ class Trainer(object):
             self.model.load_state_dict(new_state_dict)
 
         self.step = data['step']
-        # self.opt.load_state_dict(data['opt'])
-        # for i, opt in enumerate(self.opts):
-        #     opt.load_state_dict(data["opts"][i])
-        self.opt.load_state_dict(data["opt"])
+        use_muon_loaded = data.get('use_muon', False)
+        if use_muon_loaded:
+            # Load both optimizers
+            for i, opt in enumerate(self.opts):
+                opt.load_state_dict(data["opts"][i])
+        else:
+            # Load single optimizer
+            try: # for older versions where "opts" was not a list
+                self.opt.load_state_dict(data["opt"])
+            except:
+                self.opt.load_state_dict(data["opts"][0])
+        
         if self.accelerator.is_main_process:
             self.ema.load_state_dict(data["ema"])
 
@@ -225,13 +260,35 @@ class Trainer(object):
         if "test_loss_history" in data:
             self.test_loss_history = data['test_loss_history'].tolist()
         
-        if self.use_lr_scheduler and "scheduler" in data and self.use_lr_scheduler:
-            self.scheduler.load_state_dict(data['scheduler'])
+        if self.use_lr_scheduler:
+            schedulers_data = data.get('schedulers')
+            if schedulers_data:
+                if self.use_muon:
+                    self.scheduler_muon.load_state_dict(schedulers_data[0])
+                    self.scheduler_adam.load_state_dict(schedulers_data[1])
+                else:
+                    self.scheduler.load_state_dict(schedulers_data[0])
+            elif 'scheduler' in data and data['scheduler']:
+                # Backward compatibility
+                if self.use_muon:
+                    self.scheduler_muon.load_state_dict(data['scheduler'])
+                    self.scheduler_adam.load_state_dict(data['scheduler'])
+                else:
+                    self.scheduler.load_state_dict(data['scheduler'])
         
         if "lr" in data:
-            print(f"Setting loaded learning rate to {data['lr']}")
-            for param_group in self.opt.param_groups:
-                param_group['lr'] = data['lr']
+            lr_data = data['lr']
+            if self.use_muon and isinstance(lr_data, tuple):
+                print(f"Setting loaded learning rates to Muon: {lr_data[0]}, Adam: {lr_data[1]}")
+                for param_group in self.opt_muon.param_groups:
+                    param_group['lr'] = lr_data[0]
+                for param_group in self.opt_adam.param_groups:
+                    param_group['lr'] = lr_data[1]
+            else:
+                print(f"Setting loaded learning rate to {lr_data}")
+                for opt in self.opts:
+                    for param_group in opt.param_groups:
+                        param_group['lr'] = lr_data
 
     def train(self, do_profiling=False):
         accelerator = self.accelerator
@@ -270,10 +327,15 @@ class Trainer(object):
                         # Step increments only on actual updates (when gradients are accumulated and ready to do backward)
                         self.step += 1
 
-                    self.opt.step()
-                    self.opt.zero_grad()
+                    for opt in self.opts:
+                        opt.step()
+                        opt.zero_grad()
                     if self.use_lr_scheduler:
-                        self.scheduler.step()
+                        if self.use_muon:
+                            self.scheduler_muon.step()
+                            self.scheduler_adam.step()
+                        else:
+                            self.scheduler.step()
                 if profiler is not None:
                     profiler.step()
                     if self.step >= PROFILE_START_STEP + PROFILE_ACTIVE_STEPS + 1:  # +1 for warmup

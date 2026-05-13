@@ -519,3 +519,15 @@ class Unet1D(Module):
 
         x = self.final_res_block(x, t, c)
         return self.final_conv(x)
+
+    def get_2d_params(self):
+        """
+        Return parameters suitable for Muon optimizer (2D+ parameters like weight matrices).
+        """
+        return [p for p in self.parameters() if p.dim() == 2]
+
+    def get_not_2d_params(self):
+        """
+        Return parameters not suitable for Muon optimizer (1D parameters like biases).
+        """
+        return [p for p in self.parameters() if p.dim() != 2]

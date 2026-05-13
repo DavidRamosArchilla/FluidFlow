@@ -491,6 +491,17 @@ class DiT(nn.Module):
         # # return cfg eps and unconditioned eps
         return eps_sigma.chunk(2, dim=0)[0]
 
+    def get_2d_params(self):
+        """
+        Return parameters suitable for Muon optimizer (2D+ parameters like weight matrices).
+        """
+        return [p for p in self.parameters() if p.dim() == 2]
+
+    def get_not_2d_params(self):
+        """
+        Return parameters not suitable for Muon optimizer (1D parameters like biases).
+        """
+        return [p for p in self.parameters() if p.dim() != 2]
 
 #################################################################################
 #                   Sine/Cosine Positional Embedding Functions                  #

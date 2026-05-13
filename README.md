@@ -92,7 +92,7 @@ trainer = Trainer(
     save_and_sample_every=20000,
     eta_min_scheduler=1e-6,
     max_grad_norm=1.0,
-    use_cpu=True, # JUST FOR TESTING, SET TO FALSE FOR ACTUAL TRAINING
+    use_cpu=True, # JUST FOR TESTING ON NO GPU ENVIRONMENT, SET TO FALSE FOR ACTUAL TRAINING
     compile_model=True,
     split_batches=True
 )
@@ -101,6 +101,10 @@ trainer = Trainer(
 trainer.train()
 ```
 Samples and model checkpoints will be logged to `./results` periodically
+
+### **NEW**: Added support for Muon optimizer
+
+To enable it, just set `use_muon=True` when defining the `Trainer`. Muon is a new optimizer that can improve model performance and model convergence. For more details, check out the <a href="https://arxiv.org/abs/2502.16982">Muon reference</a>.
 
 ### Multi-GPU Training
 
