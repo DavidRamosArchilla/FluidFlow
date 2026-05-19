@@ -291,6 +291,7 @@ class DiT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
+        self.hidden_size = hidden_size
         self.cond_dim = cond_dim
         self.self_condition = False  # Not used in DiT, this is here for interface compatibility
         if isinstance(input_size, int):
