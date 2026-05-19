@@ -1,4 +1,4 @@
-from pathlib import Path
+cetaceofrom pathlib import Path
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -142,7 +142,7 @@ class Trainer(object):
             # Separate parameters for Muon (2D) and AdamW (1D)
             neural_net = diffusion_model.neural_net if hasattr(diffusion_model, "neural_net") else diffusion_model
             muon_params = neural_net.get_2d_params()
-            adam_params = neural_net.get_1d_params()
+            adam_params = neural_net.get_not_2d_params()
             self.opt_muon = torch.optim.Muon(muon_params, lr=train_lr, weight_decay=1e-3)
             self.opt_adam = AdamW(adam_params, lr=train_lr, betas=adam_betas, weight_decay=1e-2, fused=True, eps=eps)
             self.opts = [self.opt_muon, self.opt_adam]
