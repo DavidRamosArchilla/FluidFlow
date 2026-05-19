@@ -354,7 +354,7 @@ class DiT(nn.Module):
 
         # Initialize (and freeze) pos_embed by sin-cos embedding:
         pos_embed = get_1d_sincos_pos_embed(
-            self.pos_embed.shape[-1], 
+            self.hidden_size, 
             self.x_embedder.num_patches
         )
         # Will use fixed sin-cos embedding:
