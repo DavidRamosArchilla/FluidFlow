@@ -322,9 +322,8 @@ class DiT(nn.Module):
         self.t_embedder = TimestepEmbedder(hidden_size, bias=use_bias)
         self.y_embedder = ConditionEmbedder(cond_dim, hidden_size, class_dropout_prob)
         num_patches = self.x_embedder.num_patches
-        # Will use fixed sin-cos embedding:
+        
         print(f"Creating DiT with {num_patches} patches.")
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
         block_class = partial(WindowBlock, window_size=window_size) if attn_type == "window" else DiTBlock
         self.blocks = nn.ModuleList(
             [
@@ -358,7 +357,8 @@ class DiT(nn.Module):
             self.pos_embed.shape[-1], 
             self.x_embedder.num_patches
         )
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+        # Will use fixed sin-cos embedding:
+        self.register_buffer("pos_embed", torch.from_numpy(pos_embed).float().unsqueeze(0))
 
         # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
         w = self.x_embedder.proj.weight.data
