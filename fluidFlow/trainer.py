@@ -1,4 +1,4 @@
-cetaceofrom pathlib import Path
+from pathlib import Path
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -10,7 +10,6 @@ from torch.profiler import profile, ProfilerActivity, schedule
 
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate import FullyShardedDataParallelPlugin
-from torch.distributed.fsdp import ShardingStrategy
 from torch.distributed.fsdp import MixedPrecisionPolicy
 from ema_pytorch import EMA
 
