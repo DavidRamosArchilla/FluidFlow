@@ -1,5 +1,5 @@
 einops
-torch>=2.6
+torch
 accelerate
 torchdiffeq
 timm
