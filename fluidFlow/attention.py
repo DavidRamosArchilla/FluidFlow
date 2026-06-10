@@ -190,11 +190,10 @@ class PhysicsAttention(nn.Module):
         self.to_k = nn.Linear(dim_head, dim_head, bias=qkv_bias)
         self.to_v = nn.Linear(dim_head, dim_head, bias=qkv_bias)
 
-        # ── qk_norm ──────────────────────────────────────────────────────────
         self.qk_norm = qk_norm
-        self.q_norm = nn.RMSNorm(dim_head)
-        self.k_norm = nn.RMSNorm(dim_head)
-        # ─────────────────────────────────────────────────────────────────────
+        if qk_norm:
+            self.q_norm = nn.RMSNorm(dim_head)
+            self.k_norm = nn.RMSNorm(dim_head)
 
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, dim),
