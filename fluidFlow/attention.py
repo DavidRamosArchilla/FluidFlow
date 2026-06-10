@@ -28,6 +28,7 @@ class Attention(nn.Module):
         proj_drop: float = 0.,
         proj_bias: bool = True,
         fused_attn: bool = True,
+        **kwargs
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -156,6 +157,97 @@ class LinearAttention(nn.Module):
         return self.proj(out)
 
 
+# https://github.com/thuml/Transolver/blob/75e0f67643806a81cd1d3f6adc88dd8c02416fe7/Airfoil-Design-AirfRANS/models/Transolver.py#L11
+class PhysicsAttention(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_heads=8,
+        attn_drop=0.0,
+        slice_num=128,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        proj_drop: float = 0.0,
+        proj_bias: bool = True,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+        dim_head = dim // num_heads
+        inner_dim = dim_head * num_heads
+        self.dim_head = dim_head
+        self.heads = num_heads
+        self.scale = dim_head ** -0.5
+        self.softmax = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(attn_drop)
+        self.temperature = nn.Parameter(torch.ones([1, num_heads, 1, 1]) * 0.5)
+
+        self.in_project_x = nn.Linear(dim, inner_dim)
+        self.in_project_fx = nn.Linear(dim, inner_dim)
+        self.in_project_slice = nn.Linear(dim_head, slice_num)
+        for l in [self.in_project_slice]:
+            torch.nn.init.orthogonal_(l.weight)
+        self.to_q = nn.Linear(dim_head, dim_head, bias=qkv_bias)
+        self.to_k = nn.Linear(dim_head, dim_head, bias=qkv_bias)
+        self.to_v = nn.Linear(dim_head, dim_head, bias=qkv_bias)
+
+        # ── qk_norm ──────────────────────────────────────────────────────────
+        self.qk_norm = qk_norm
+        self.q_norm = nn.RMSNorm(dim_head)
+        self.k_norm = nn.RMSNorm(dim_head)
+        # ─────────────────────────────────────────────────────────────────────
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(proj_drop)
+        )
+
+    def forward(self, x, rope=None, mask=None):
+        B, N, C = x.shape
+
+        ### (1) Slice
+        fx_mid = self.in_project_fx(x).reshape(B, N, self.heads, self.dim_head) \
+            .permute(0, 2, 1, 3).contiguous()          # B H N C
+        x_mid = self.in_project_x(x).reshape(B, N, self.heads, self.dim_head) \
+            .permute(0, 2, 1, 3).contiguous()          # B H N C
+
+        slice_weights = self.softmax(
+            self.in_project_slice(x_mid) / self.temperature
+        )                                              # B H N G
+
+        if mask is not None:
+            slice_weights = slice_weights * mask.float()[:, None, :, None]
+
+        slice_norm  = slice_weights.sum(2)             # B H G
+        slice_token = slice_weights.transpose(-2, -1) @ fx_mid
+        slice_token = slice_token / (
+            (slice_norm + 1e-5)[:, :, :, None]
+            .repeat(1, 1, 1, self.dim_head)
+        )
+
+        ### (2) Attention among slice tokens
+        q = self.to_q(slice_token)
+        k = self.to_k(slice_token)
+        v = self.to_v(slice_token)
+
+        # ── qk_norm ──────────────────────────────────────────────────────────
+        if self.qk_norm:
+            dtype = q.dtype
+            q = self.q_norm(q.to(self.q_norm.weight.dtype)).to(dtype)
+            k = self.k_norm(k.to(self.k_norm.weight.dtype)).to(dtype)
+        # ─────────────────────────────────────────────────────────────────────
+
+        out_slice_token = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout.p if self.training else 0.0,
+            scale=self.scale,
+        )
+
+        ### (3) Deslice
+        out_x = slice_weights @ out_slice_token
+        out_x = rearrange(out_x, 'b h n d -> b n (h d)')
+        return self.to_out(out_x)
+
+
 class WindowAttention(nn.Module):
     r""" Window based multi-head self attention (W-MSA) module with relative position bias.
     Adapted for 1D sequences.
@@ -170,7 +262,7 @@ class WindowAttention(nn.Module):
         proj_drop (float, optional): Dropout ratio of output. Default: 0.0
     """
 
-    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., qk_norm=False):
+    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., qk_norm=False, **kwargs):
 
         super().__init__()
         self.dim = dim

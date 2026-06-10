@@ -6,7 +6,7 @@ from einops import repeat, rearrange, pack, unpack
 import numpy as np
 from timm.models.vision_transformer import PatchEmbed, Mlp
 
-from .attention import Attention, VisionRotaryEmbeddingFast, LinearAttention, WindowAttention
+from .attention import Attention, VisionRotaryEmbeddingFast, LinearAttention, WindowAttention, PhysicsAttention
 from .basic_modules import SwiGLUFFN
 from .moe import SparseMoeBlock
 
@@ -139,6 +139,8 @@ class DiTBlock(nn.Module):
             self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
         elif attn_type == "linear":
             self.attn = LinearAttention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
+        elif attn_type == "physics":
+            self.attn = PhysicsAttention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
         else:
             self.attn = None
         
@@ -279,7 +281,8 @@ class DiT(nn.Module):
         use_swiglu=False,
         use_rope=False,
         attn_type="vanilla",
-        window_size=64,
+        slice_num=128, # for physics attention
+        window_size=64, # for window attention
         qk_norm=False,
         num_experts=None,
         num_experts_per_tok=None,
@@ -338,6 +341,7 @@ class DiT(nn.Module):
                     qk_norm=qk_norm,
                     num_experts=num_experts,
                     num_experts_per_tok=num_experts_per_tok,
+                    slice_num=slice_num
                 )
                 for _ in range(depth)
             ]
