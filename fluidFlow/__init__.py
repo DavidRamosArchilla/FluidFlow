@@ -7,6 +7,7 @@ __all__ = [
     "attention",
     "basic_modules",
     "dit",
+    "video_dit",
     "moe",
     "trainer",
     "unet",

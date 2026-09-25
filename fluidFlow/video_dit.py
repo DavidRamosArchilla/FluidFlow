@@ -1,7 +1,17 @@
+"""Video-only DiT backbone.
+
+Assumes video-like input at all times:
+    1D video: (B, F, C, N)
+    2D video: (B, F, C, H, W)
+
+Same interface as :class:`fluidFlow.dit.DiT` (forward, forward_with_cond_scale,
+get_2d_params / get_1d_params). ``is_video`` is always True so
+``FlowMatching.sample`` can generate noise with a temporal dimension.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 from einops import repeat, rearrange, pack, unpack
 import numpy as np
 from timm.models.vision_transformer import PatchEmbed, Mlp
@@ -12,6 +22,7 @@ from .moe import SparseMoeBlock
 
 import math
 from functools import partial
+
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -24,7 +35,7 @@ def default(val, d):
 def pack_one_with_inverse(x, pattern):
     packed, packed_shape = pack([x], pattern)
 
-    def inverse(x, inverse_pattern = None):
+    def inverse(x, inverse_pattern=None):
         inverse_pattern = default(inverse_pattern, pattern)
         return unpack(x, packed_shape, inverse_pattern)[0]
 
@@ -33,15 +44,13 @@ def pack_one_with_inverse(x, pattern):
 def project(x, y):
     x, inverse = pack_one_with_inverse(x, 'b *')
     y, _ = pack_one_with_inverse(y, 'b *')
-
     dtype = x.dtype
     x, y = x.double(), y.double()
-    unit = F.normalize(y, dim = -1)
-
-    parallel = (x * unit).sum(dim = -1, keepdim = True) * unit
+    unit = F.normalize(y, dim=-1)
+    parallel = (x * unit).sum(dim=-1, keepdim=True) * unit
     orthogonal = x - parallel
-
     return inverse(parallel).to(dtype), inverse(orthogonal).to(dtype)
+
 
 #################################################################################
 #               Embedding Layers for Timesteps and Class Labels                 #
@@ -70,7 +79,6 @@ class TimestepEmbedder(nn.Module):
         :param max_period: controls the minimum frequency of the embeddings.
         :return: an (N, D) Tensor of positional embeddings.
         """
-        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         half = dim // 2
         freqs = torch.exp(
             -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
@@ -93,13 +101,11 @@ class ConditionEmbedder(nn.Module):
     """
     def __init__(self, cond_dim, hidden_size, dropout_prob):
         super().__init__()
-        # self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
         self.mlp = nn.Sequential(
             nn.Linear(cond_dim, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, hidden_size)
         )
-        # self.cond_dim = cond_dim
         self.null_classes_emb = nn.Parameter(torch.randn(cond_dim))
         self.dropout_prob = dropout_prob
 
@@ -112,7 +118,7 @@ class ConditionEmbedder(nn.Module):
             drop_ids = torch.rand(cond_variables.shape[0], device=cond_variables.device) < self.dropout_prob
         else:
             drop_ids = force_drop_ids == 1
-        null_classes_emb = repeat(self.null_classes_emb, 'd -> b d', b = batch)
+        null_classes_emb = repeat(self.null_classes_emb, 'd -> b d', b=batch)
         cond_variables = torch.where(
             rearrange(drop_ids, "b -> b 1"), null_classes_emb, cond_variables
         )
@@ -124,17 +130,16 @@ class ConditionEmbedder(nn.Module):
             cond_variables = self.token_drop(cond_variables, force_drop_ids)
         embeddings = self.mlp(cond_variables)
         return embeddings
-    
+
+
 class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, bias=True, use_swiglu=False, attn_type="vanilla", qk_norm=False, num_experts=None, num_experts_per_tok=None, **attn_kwargs):
         super().__init__()
-        self.norm1 = nn.RMSNorm(hidden_size, elementwise_affine=bias) # nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        # attention_class = LinearAttention if linear_attn else Attention
-        # self.attn = attention_class(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
-        self.norm2 = nn.RMSNorm(hidden_size, elementwise_affine=bias) # nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm1 = nn.RMSNorm(hidden_size, elementwise_affine=bias)
+        self.norm2 = nn.RMSNorm(hidden_size, elementwise_affine=bias)
         if attn_type == "vanilla":
             self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
         elif attn_type == "linear":
@@ -143,13 +148,13 @@ class DiTBlock(nn.Module):
             self.attn = PhysicsAttention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
         else:
             self.attn = None
-        
+
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         if num_experts is not None and num_experts_per_tok is not None:
-            self.mlp = SparseMoeBlock(embed_dim=hidden_size, mlp_ratio=mlp_ratio, num_experts=num_experts, num_experts_per_tok=num_experts_per_tok) # SparseMoeBlock
+            self.mlp = SparseMoeBlock(embed_dim=hidden_size, mlp_ratio=mlp_ratio, num_experts=num_experts, num_experts_per_tok=num_experts_per_tok)
         elif use_swiglu:
-            self.mlp = SwiGLUFFN(hidden_size, int(2/3 * mlp_hidden_dim), bias=bias)
+            self.mlp = SwiGLUFFN(hidden_size, int(2 / 3 * mlp_hidden_dim), bias=bias)
         else:
             self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0, bias=bias)
         self.adaLN_modulation = nn.Sequential(
@@ -161,8 +166,9 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope)
         x = x.contiguous()
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))       
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
+
 
 def window_partition(x, window_size):
     """
@@ -174,8 +180,6 @@ def window_partition(x, window_size):
         windows: (num_windows*B, window_size, C)
     """
     B, N, C = x.shape
-    # x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
-    # windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
     x = x.view(B, N // window_size, window_size, C)
     windows = x.permute(0, 1, 2, 3).contiguous().view(-1, window_size, C)
     return windows
@@ -190,16 +194,16 @@ class WindowBlock(DiTBlock):
         # override attention with window attention
         self.attn = WindowAttention(hidden_size, window_size=window_size, num_heads=num_heads, qkv_bias=False)
         self.window_size = window_size
-        # shift_size will be ignored for the moment
 
     def forward(self, x, c, feat_rope=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = modulate(self.norm1(x), shift_msa, scale_msa)
-        x_windows = window_partition(x, self.window_size) 
-        attn_windows = self.attn(x_windows).view(x.shape) # window reverse operation
+        x_windows = window_partition(x, self.window_size)
+        attn_windows = self.attn(x_windows).view(x.shape)  # window reverse operation
         x = x + gate_msa.unsqueeze(1) * attn_windows
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
+
 
 class FinalLayer(nn.Module):
     """
@@ -207,7 +211,7 @@ class FinalLayer(nn.Module):
     """
     def __init__(self, hidden_size, patch_size, out_channels, bias=True):
         super().__init__()
-        self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=bias) # nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=bias)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=bias)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -220,34 +224,52 @@ class FinalLayer(nn.Module):
         x = self.linear(x)
         return x
 
+
 #################################################################################
-#                                     1D DiT                                    #
+#                            Video patch embedders                              #
 #################################################################################
 
-class PatchEmbed1D(nn.Module):
-    """1D sequence to Patch Embedding"""
-    def __init__(self, seq_len, patch_size, in_channels, embed_dim):
+class PatchEmbed1DVideo(nn.Module):
+    """1D video to Patch Embedding: (B, F, C, N) -> (B, F*S, D)."""
+    def __init__(self, seq_len, num_frames, patch_size, in_channels, embed_dim):
         super().__init__()
-        self.seq_len = seq_len
-        self.patch_size = patch_size
-        self.num_patches = seq_len // patch_size
-        self.proj = nn.Conv1d(
-            in_channels, embed_dim, kernel_size=patch_size, stride=patch_size
-        )
-    
-    def forward(self, x):
-        # x: (B, C, S)
-        x = self.proj(x)  # (B, embed_dim, num_patches)
-        x = x.transpose(1, 2)  # (B, num_patches, embed_dim)
-        return x
-    
+        self.num_frames = num_frames
+        self.num_spatial_patches = seq_len // patch_size
+        self.num_patches = num_frames * self.num_spatial_patches
+        self.proj = nn.Conv1d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+    def forward(self, x):  # x: (B, F, C, N)
+        B, F, C, N = x.shape
+        x = x.reshape(B * F, C, N)
+        x = self.proj(x).transpose(1, 2)  # (B*F, S, D)
+        return x.reshape(B, self.num_patches, -1)  # (B, F*S, D)
+
+
+class PatchEmbed2DVideo(nn.Module):
+    """2D video to Patch Embedding: (B, F, C, H, W) -> (B, F*S, D)."""
+    def __init__(self, img_size, num_frames, patch_size, in_channels, embed_dim):
+        super().__init__()
+        self.num_frames = num_frames
+        self._spatial_embed = PatchEmbed(img_size, patch_size, in_channels, embed_dim)
+        self.num_spatial_patches = self._spatial_embed.num_patches
+        self.num_patches = num_frames * self.num_spatial_patches
+        # expose .proj so initialize_weights() can reach it via the same path
+        self.proj = self._spatial_embed.proj
+
+    def forward(self, x):  # x: (B, F, C, H, W)
+        B, F, C, H, W = x.shape
+        x = x.reshape(B * F, C, H, W)
+        x = self._spatial_embed(x)  # (B*F, S, D)
+        return x.reshape(B, self.num_patches, -1)  # (B, F*S, D)
+
+
 class FinalLayer1D(nn.Module):
     """
     The final layer of DiT.
     """
     def __init__(self, hidden_size, patch_size, out_channels, bias=True):
         super().__init__()
-        self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=bias) # nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=bias)
         self.linear = nn.Linear(hidden_size, patch_size * out_channels, bias=bias)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -259,16 +281,91 @@ class FinalLayer1D(nn.Module):
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
-    
 
-class DiT(nn.Module):
+
+class SpatialDiTBlock(DiTBlock):
     """
-    Diffusion model with a Transformer backbone.
+    Standard DiT attention over the spatial dimension only.
+
+    Accepts the full video token sequence (B, F*S, D) but internally folds
+    frames into the batch so attention is limited to within-frame patches:
+        (B, F*S, D) -> (B*F, S, D) -> attention -> (B, F*S, D)
+    """
+    def __init__(self, hidden_size, num_heads, *args, num_frames=1, **kwargs):
+        super().__init__(hidden_size, num_heads, *args, **kwargs)
+        self.num_frames = num_frames
+
+    def forward(self, x, c, feat_rope=None):
+        B, FS, D = x.shape
+        F, S = self.num_frames, FS // self.num_frames
+
+        # fold frames into batch dimension
+        x_s = x.reshape(B * F, S, D)
+        c_s = c.unsqueeze(1).expand(-1, F, -1).reshape(B * F, D)
+
+        shift_msa, scale_msa, gate_msa, \
+        shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c_s).chunk(6, dim=1)
+        x_s = x_s + gate_msa.unsqueeze(1) * self.attn(
+            modulate(self.norm1(x_s), shift_msa, scale_msa), rope=feat_rope)
+        x_s = x_s.contiguous()
+        x_s = x_s + gate_mlp.unsqueeze(1) * self.mlp(
+            modulate(self.norm2(x_s), shift_mlp, scale_mlp))
+
+        return x_s.reshape(B, FS, D)
+
+
+class TemporalDiTBlock(DiTBlock):
+    """
+    DiT attention across the temporal (frame) dimension.
+
+    Accepts (B, F*S, D) and transposes to make frames the sequence axis:
+        (B, F*S, D) -> (B*S, F, D) -> attention -> (B, F*S, D)
+    """
+    def __init__(self, hidden_size, num_heads, *args, num_spatial_patches=64, **kwargs):
+        super().__init__(hidden_size, num_heads, *args, **kwargs)
+        self.num_spatial_patches = num_spatial_patches
+
+    def forward(self, x, c, feat_rope=None):  # feat_rope intentionally ignored
+        B, FS, D = x.shape
+        S = self.num_spatial_patches
+        F = FS // S
+
+        # (B, F, S, D) -> (B*S, F, D)
+        x_t = x.reshape(B, F, S, D).permute(0, 2, 1, 3).reshape(B * S, F, D)
+        c_t = c.unsqueeze(1).expand(-1, S, -1).reshape(B * S, D)
+
+        shift_msa, scale_msa, gate_msa, \
+        shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c_t).chunk(6, dim=1)
+        x_t = x_t + gate_msa.unsqueeze(1) * self.attn(
+            modulate(self.norm1(x_t), shift_msa, scale_msa))  # no RoPE
+        x_t = x_t.contiguous()
+        x_t = x_t + gate_mlp.unsqueeze(1) * self.mlp(
+            modulate(self.norm2(x_t), shift_mlp, scale_mlp))
+
+        # (B*S, F, D) -> (B, F*S, D)
+        return x_t.reshape(B, S, F, D).permute(0, 2, 1, 3).reshape(B, FS, D)
+
+
+#################################################################################
+#                                 Video-only DiT                                #
+#################################################################################
+
+class VideoDiT(nn.Module):
+    """
+    Diffusion model with a Transformer backbone, video-only.
+
+    Supported input shapes
+    ----------------------
+    Video 1-D  (B, F, C, N)
+    Video 2-D  (B, F, C, H, W)
+
+    Same interface as :class:`fluidFlow.dit.DiT`.
     """
     def __init__(
         self,
-        input_size=1024,        
-        patch_size=16,       # Patch size along sequence
+        input_size=1024,
+        num_frames=8,
+        patch_size=16,
         in_channels=1,
         cond_dim=2,
         class_dropout_prob=0.1,
@@ -277,18 +374,20 @@ class DiT(nn.Module):
         num_heads=8,
         mlp_ratio=4.0,
         learn_sigma=False,
-        use_bias=True, # this is to use muon
+        use_bias=True,
         use_swiglu=False,
         use_rope=False,
         attn_type="vanilla",
-        slice_num=128, # for physics attention
-        window_size=64, # for window attention
+        slice_num=128,
+        window_size=64,
         qk_norm=False,
         num_experts=None,
         num_experts_per_tok=None,
+        factorize=True,
         **kwargs
     ):
         super().__init__()
+        assert num_frames is not None and num_frames > 1, "VideoDiT requires num_frames > 1"
         self.learn_sigma = learn_sigma
         self.channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
@@ -296,56 +395,86 @@ class DiT(nn.Module):
         self.num_heads = num_heads
         self.hidden_size = hidden_size
         self.cond_dim = cond_dim
-        self.self_condition = False  # Not used in DiT, this is here for interface compatibility
+        self.self_condition = False  # Not used in DiT, here for interface compatibility
+        self.num_frames = num_frames
+        self.is_video = True
+        self.factorize = factorize
+
+        # -- Patch embedder & final layer --
+        self.input_size = input_size
         if isinstance(input_size, int):
-            self.x_embedder = PatchEmbed1D(input_size, patch_size, in_channels, hidden_size)
-            self.final_layer = FinalLayer1D(hidden_size, patch_size, self.out_channels, bias=use_bias)
             self.is_1d = True
-            print("Creating 1D DiT")
+            self.x_embedder = PatchEmbed1DVideo(
+                input_size, num_frames, patch_size, in_channels, hidden_size)
+            self.final_layer = FinalLayer1D(hidden_size, patch_size,
+                                            self.out_channels, bias=use_bias)
+            print("Creating Video 1D DiT")
         else:
             assert isinstance(input_size, tuple) and len(input_size) == 2
-            self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size)
-            self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels, bias=use_bias)
             self.is_1d = False
-            print("Creating 2D DiT")
+            self.x_embedder = PatchEmbed2DVideo(
+                input_size, num_frames, patch_size, in_channels, hidden_size)
+            self.final_layer = FinalLayer(hidden_size, patch_size,
+                                          self.out_channels, bias=use_bias)
+            print("Creating Video 2D DiT")
 
-        if use_rope:
-            if self.is_1d:
-                head_dim = hidden_size // num_heads
-                seq_len = input_size // patch_size
-                self.feat_rope = VisionRotaryEmbeddingFast(
-                    dim=head_dim,
-                    max_seq_len=seq_len,
-                )
-            else:
-                print("rope is only implemente for 1D DiT for the moment. Setting use_rope to False.")
-                self.feat_rope = None
+        # -- RoPE (spatial only) --
+        if use_rope and self.is_1d:
+            head_dim = hidden_size // num_heads
+            seq_len = input_size // patch_size
+            self.feat_rope = VisionRotaryEmbeddingFast(dim=head_dim, max_seq_len=seq_len)
         else:
+            if use_rope and not self.is_1d:
+                print("rope is only implemented for 1D DiT. Setting use_rope to False.")
             self.feat_rope = None
 
+        # -- Condition / timestep embedders --
         self.t_embedder = TimestepEmbedder(hidden_size, bias=use_bias)
         self.y_embedder = ConditionEmbedder(cond_dim, hidden_size, class_dropout_prob)
+
+        num_spatial_patches = self.x_embedder.num_spatial_patches
         num_patches = self.x_embedder.num_patches
-        
-        print(f"Creating DiT with {num_patches} patches.")
-        block_class = partial(WindowBlock, window_size=window_size) if attn_type == "window" else DiTBlock
-        self.blocks = nn.ModuleList(
-            [
+        print(f"Creating VideoDiT with {num_patches} total patches "
+              f"({'factorized' if factorize else 'full-attn'} mode).")
+
+        # -- Transformer blocks --
+        if factorize:
+            # Alternate: even indices -> SpatialDiTBlock, odd -> TemporalDiTBlock
+            self.blocks = nn.ModuleList()
+            for i in range(depth):
+                if i % 2 == 0:
+                    blk = SpatialDiTBlock(
+                        hidden_size, num_heads,
+                        num_frames=num_frames,
+                        mlp_ratio=mlp_ratio, bias=use_bias,
+                        use_swiglu=use_swiglu, attn_type=attn_type,
+                        qk_norm=qk_norm, num_experts=num_experts,
+                        num_experts_per_tok=num_experts_per_tok,
+                        slice_num=slice_num)
+                else:
+                    blk = TemporalDiTBlock(
+                        hidden_size, num_heads,
+                        num_spatial_patches=num_spatial_patches,
+                        mlp_ratio=mlp_ratio, bias=use_bias,
+                        use_swiglu=use_swiglu,
+                        attn_type="vanilla",  # temporal always uses vanilla attn
+                        qk_norm=qk_norm)
+                self.blocks.append(blk)
+        else:
+            # Full attention over all F*S tokens
+            block_class = (partial(WindowBlock, window_size=window_size)
+                           if attn_type == "window" else DiTBlock)
+            self.blocks = nn.ModuleList([
                 block_class(
-                    hidden_size,
-                    num_heads,
-                    mlp_ratio=mlp_ratio,
-                    bias=use_bias,
-                    use_swiglu=use_swiglu,
-                    attn_type=attn_type,
-                    qk_norm=qk_norm,
-                    num_experts=num_experts,
+                    hidden_size, num_heads,
+                    mlp_ratio=mlp_ratio, bias=use_bias,
+                    use_swiglu=use_swiglu, attn_type=attn_type,
+                    qk_norm=qk_norm, num_experts=num_experts,
                     num_experts_per_tok=num_experts_per_tok,
-                    slice_num=slice_num
-                )
+                    slice_num=slice_num)
                 for _ in range(depth)
-            ]
-        )
+            ])
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -357,13 +486,18 @@ class DiT(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # Initialize (and freeze) pos_embed by sin-cos embedding:
+        # Spatial positional embedding: (1, S, D), S = patches-per-frame
         pos_embed = get_1d_sincos_pos_embed(
-            self.hidden_size, 
-            self.x_embedder.num_patches
+            self.hidden_size,
+            self.x_embedder.num_spatial_patches
         )
         # Will use fixed sin-cos embedding:
-        self.register_buffer("pos_embed", torch.from_numpy(pos_embed).float().unsqueeze(0))
+        self.register_buffer("pos_embed", torch.from_numpy(pos_embed).float().unsqueeze(0))  # (1, S, D)
+
+        # Temporal positional embedding: (1, F, D)
+        temp_embed = get_1d_sincos_pos_embed(self.hidden_size, self.num_frames)
+        self.register_buffer("temporal_pos_embed",
+                             torch.from_numpy(temp_embed).float().unsqueeze(0))  # (1, F, D)
 
         # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
         w = self.x_embedder.proj.weight.data
@@ -389,49 +523,62 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    
+    def _video_pos_embed(self):
+        """
+        Build (1, F*S, D) by adding broadcast spatial and temporal embeddings.
+
+        Token layout: [f0_s0 .. f0_sS | f1_s0 .. f1_sS | .. | f(F-1)_s0 .. f(F-1)_sS]
+        """
+        S = self.x_embedder.num_spatial_patches
+        F = self.num_frames
+        D = self.hidden_size
+
+        # (1, S, D) -> (1, F, S, D) -> (1, F*S, D)
+        sp = self.pos_embed.unsqueeze(1).expand(-1, F, -1, -1).reshape(1, F * S, D)
+        # (1, F, D) -> (1, F, S, D) -> (1, F*S, D)
+        tp = self.temporal_pos_embed.unsqueeze(2).expand(-1, -1, S, -1).reshape(1, F * S, D)
+        return sp + tp
+
     def unpatchify(self, x):
         """
-        x: (B, num_patches, patch_size * C) for 1D or (B, num_patches, patch_size^2 * C) for 2D
-        output: (B, C, S) for 1D or (B, C, H, W) for 2D
+        x: (B, F*S, p*C) for 1D or (B, F*S, p^2*C) for 2D
+        output: (B, F, C, S) for 1D or (B, F, C, H, W) for 2D
         """
         c = self.out_channels
         p = self.patch_size
-        num_patches = x.shape[1]
-        
+        F = self.num_frames
+        S = x.shape[1] // F  # spatial patches per frame
+
         if self.is_1d:
-            # 1D case: output (B, C, S)
-            x = x.reshape(x.shape[0], num_patches, p, c)  # (B, num_patches, patch_size, C)
-            x = x.permute(0, 3, 1, 2)  # (B, C, num_patches, patch_size)
-            x = x.reshape(x.shape[0], c, num_patches * p)  # (B, C, S)
+            x = x.reshape(x.shape[0], F, S, p, c)
+            x = x.permute(0, 1, 4, 2, 3)  # (B, F, C, S, p)
+            x = x.reshape(x.shape[0], F, c, S * p)  # (B, F, C, seq_len)
         else:
-            # 2D case: output (B, C, H, W)
-            h = w = int(x.shape[1] ** 0.5)
-            assert h * w == x.shape[1]
-            x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-            x = torch.einsum('nhwpqc->nchpwq', x)
-            x = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        
+            h = self.input_size[0] // p
+            w = self.input_size[1] // p
+            x = x.reshape(x.shape[0], F, h, w, p, p, c)
+            x = x.permute(0, 1, 6, 2, 4, 3, 5)  # (B, F, C, h, p, w, p)
+            x = x.reshape(x.shape[0], F, c, h * p, w * p)  # (B, F, C, H, W)
+
         return x
 
     def forward(self, x, t, classes, return_act=False, *args, **kwargs):
         """
-        Forward pass of DiT.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
-        t: (N,) tensor of diffusion timesteps
-        y: (N,) tensor of class labels
+        Forward pass of VideoDiT.
+        x: (B, F, C, N) for 1D video or (B, F, C, H, W) for 2D video
+        t: (B,) tensor of diffusion timesteps
+        classes: (B, cond_dim) tensor of conditioning variables
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
-        t = self.t_embedder(t)                   # (N, D)
+        x = self.x_embedder(x) + self._video_pos_embed()  # (B, F*S, D)
+        t = self.t_embedder(t)  # (N, D)
         force_drop_ids = kwargs.get("force_drop_ids", None)
-        y = self.y_embedder(classes, self.training, force_drop_ids)    # (N, D)
-        c = t + y                                # (N, D)
+        y = self.y_embedder(classes, self.training, force_drop_ids)  # (N, D)
+        c = t + y  # (N, D)
         for block in self.blocks:
-            # x = checkpoint(block, x, c, self.feat_rope, use_reentrant=False)
-            x = block(x, c, self.feat_rope)                      # (N, T, D)
+            x = block(x, c, self.feat_rope)  # (N, T, D)
         act = x
-        x = self.final_layer(x, c)               # (B, num_patches, patch_size * out_channels)
-        x = self.unpatchify(x)                   # (B, out_channels, S)
+        x = self.final_layer(x, c)  # (B, F*S, patch_size * out_channels)
+        x = self.unpatchify(x)  # (B, F, out_channels, ...)
         if return_act:
             return x, act
         return x
@@ -450,10 +597,8 @@ class DiT(nn.Module):
         **kwargs,
     ):
         """
-        Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
+        Forward pass of VideoDiT, but also batches the unconditional forward pass for classifier-free guidance.
         """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
-        # half = x[: len(x) // 2]
         batch_size = x.shape[0]
         combined = torch.cat([x, x], dim=0)
         force_drop_ids = torch.cat(
@@ -466,19 +611,16 @@ class DiT(nn.Module):
         y_combined = torch.cat([classes, classes], dim=0)
         t_combined = torch.cat([t, t], dim=0)
         model_out = self.forward(combined, t_combined, y_combined, force_drop_ids=force_drop_ids)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # separate noise predictions and from variance predictions if present
-        eps, rest = model_out[:, :self.channels], model_out[:, self.channels:]
-        # eps, rest = model_out[:, :3], model_out[:, 3:]
+        # Video layout is (B, F, C, ...) so the channel dim is 2
+        ch = self.channels
+        cdim = 2
+        eps = model_out.narrow(cdim, 0, ch)
+        rest = model_out.narrow(cdim, ch, self.out_channels - ch)
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        # return half_eps, uncond_eps
         update = cond_eps - uncond_eps
         if remove_parallel_component:
             parallel, orthog = project(update, cond_eps)
             update = orthog + parallel * keep_parallel_frac
-        # half_eps = uncond_eps + cond_scale * (cond_eps - uncond_eps)
         half_eps = cond_eps + update * (cond_scale - 1)
 
         if cfg_interval_start > 0:
@@ -487,13 +629,13 @@ class DiT(nn.Module):
                 half_eps = cond_eps
 
         if rescaled_phi != 0:
-            std_fn = partial(torch.std, dim = tuple(range(1, half_eps.ndim)), keepdim = True)
+            std_fn = partial(torch.std, dim=tuple(range(1, half_eps.ndim)), keepdim=True)
             rescaled_logits = half_eps * (std_fn(cond_eps) / std_fn(half_eps))
             half_eps = rescaled_logits * rescaled_phi + half_eps * (1. - rescaled_phi)
 
         eps = torch.cat([half_eps, uncond_eps], dim=0)
-        eps_sigma = torch.cat([eps, rest], dim=1)
-        # # return cfg eps and unconditioned eps
+        eps_sigma = torch.cat([eps, rest], dim=cdim)
+        # return cfg eps
         return eps_sigma.chunk(2, dim=0)[0]
 
     def get_2d_params(self):
@@ -507,6 +649,7 @@ class DiT(nn.Module):
         Return parameters not suitable for Muon optimizer (1D parameters like biases).
         """
         return [p for p in self.parameters() if p.dim() != 2]
+
 
 #################################################################################
 #                   Sine/Cosine Positional Embedding Functions                  #
@@ -525,7 +668,7 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=
     else:
         grid_h = np.arange(grid_size[0], dtype=np.float32)
         grid_w = np.arange(grid_size[1], dtype=np.float32)
-    
+
     grid = np.meshgrid(grid_w, grid_h)  # here w goes first
     grid = np.stack(grid, axis=0)
 
@@ -543,7 +686,7 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
     emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
 
-    emb = np.concatenate([emb_h, emb_w], axis=1) # (H*W, D)
+    emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
     return emb
 
 
@@ -561,11 +704,12 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     pos = pos.reshape(-1)  # (M,)
     out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
 
-    emb_sin = np.sin(out) # (M, D/2)
-    emb_cos = np.cos(out) # (M, D/2)
+    emb_sin = np.sin(out)  # (M, D/2)
+    emb_cos = np.cos(out)  # (M, D/2)
 
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
+
 
 def get_1d_sincos_pos_embed(embed_dim, length):
     """
@@ -577,90 +721,90 @@ def get_1d_sincos_pos_embed(embed_dim, length):
 
 
 #################################################################################
-#                                   DiT Configs                                  #
+#                               VideoDiT Configs                                #
 #################################################################################
 
-def DiT_XL_1(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=1, num_heads=16, **kwargs)
+def VideoDiT_XL_1(**kwargs):
+    return VideoDiT(depth=28, hidden_size=1152, patch_size=1, num_heads=16, **kwargs)
 
-def DiT_XL_2(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+def VideoDiT_XL_2(**kwargs):
+    return VideoDiT(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
 
-def DiT_XL_4(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
+def VideoDiT_XL_4(**kwargs):
+    return VideoDiT(depth=28, hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
 
-def DiT_XL_8(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
+def VideoDiT_XL_8(**kwargs):
+    return VideoDiT(depth=28, hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
 
-def DiT_L_1(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=1, num_heads=16, **kwargs)
+def VideoDiT_L_1(**kwargs):
+    return VideoDiT(depth=24, hidden_size=1024, patch_size=1, num_heads=16, **kwargs)
 
-def DiT_L_2(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+def VideoDiT_L_2(**kwargs):
+    return VideoDiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
 
-def DiT_L_4(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
+def VideoDiT_L_4(**kwargs):
+    return VideoDiT(depth=24, hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
 
-def DiT_L_8(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
+def VideoDiT_L_8(**kwargs):
+    return VideoDiT(depth=24, hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
 
-def DiT_B_1(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=1, num_heads=12, **kwargs)
+def VideoDiT_B_1(**kwargs):
+    return VideoDiT(depth=12, hidden_size=768, patch_size=1, num_heads=12, **kwargs)
 
-def DiT_B_2(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+def VideoDiT_B_2(**kwargs):
+    return VideoDiT(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
 
-def DiT_B_4(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
+def VideoDiT_B_4(**kwargs):
+    return VideoDiT(depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
 
-def DiT_B_8(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=8, num_heads=12, **kwargs)
+def VideoDiT_B_8(**kwargs):
+    return VideoDiT(depth=12, hidden_size=768, patch_size=8, num_heads=12, **kwargs)
 
-def DiT_S_1(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=1, num_heads=6, **kwargs)
+def VideoDiT_S_1(**kwargs):
+    return VideoDiT(depth=12, hidden_size=384, patch_size=1, num_heads=6, **kwargs)
 
-def DiT_S_2(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
+def VideoDiT_S_2(**kwargs):
+    return VideoDiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
 
-def DiT_S_4(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
+def VideoDiT_S_4(**kwargs):
+    return VideoDiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
 
-def DiT_S_8(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
+def VideoDiT_S_8(**kwargs):
+    return VideoDiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
 
-def DiT_XS_1(**kwargs):
-    return DiT(depth=8, hidden_size=256, patch_size=1, num_heads=4, **kwargs)
+def VideoDiT_XS_1(**kwargs):
+    return VideoDiT(depth=8, hidden_size=256, patch_size=1, num_heads=4, **kwargs)
 
-def DiT_XS_2(**kwargs):
-    return DiT(depth=8, hidden_size=256, patch_size=2, num_heads=4, **kwargs)
+def VideoDiT_XS_2(**kwargs):
+    return VideoDiT(depth=8, hidden_size=256, patch_size=2, num_heads=4, **kwargs)
 
-def DiT_XS_4(**kwargs):
-    return DiT(depth=8, hidden_size=256, patch_size=4, num_heads=4, **kwargs)
+def VideoDiT_XS_4(**kwargs):
+    return VideoDiT(depth=8, hidden_size=256, patch_size=4, num_heads=4, **kwargs)
 
-def DiT_XS_8(**kwargs):
-    return DiT(depth=8, hidden_size=256, patch_size=8, num_heads=4, **kwargs)
+def VideoDiT_XS_8(**kwargs):
+    return VideoDiT(depth=8, hidden_size=256, patch_size=8, num_heads=4, **kwargs)
 
-def DiT_XXS_1(**kwargs):
-    return DiT(depth=6, hidden_size=128, patch_size=1, num_heads=4, **kwargs)
+def VideoDiT_XXS_1(**kwargs):
+    return VideoDiT(depth=6, hidden_size=128, patch_size=1, num_heads=4, **kwargs)
 
-def DiT_XXS_2(**kwargs):
-    return DiT(depth=6, hidden_size=128, patch_size=2, num_heads=4, **kwargs)
+def VideoDiT_XXS_2(**kwargs):
+    return VideoDiT(depth=6, hidden_size=128, patch_size=2, num_heads=4, **kwargs)
 
-def DiT_XXS_4(**kwargs):
-    return DiT(depth=6, hidden_size=128, patch_size=4, num_heads=4, **kwargs)
+def VideoDiT_XXS_4(**kwargs):
+    return VideoDiT(depth=6, hidden_size=128, patch_size=4, num_heads=4, **kwargs)
 
-def DiT_XXS_8(**kwargs):
-    return DiT(depth=6, hidden_size=128, patch_size=8, num_heads=4, **kwargs)
+def VideoDiT_XXS_8(**kwargs):
+    return VideoDiT(depth=6, hidden_size=128, patch_size=8, num_heads=4, **kwargs)
 
-def DiT_XXXS_1(**kwargs):
-    return DiT(depth=4, hidden_size=128, patch_size=1, num_heads=4, **kwargs)
+def VideoDiT_XXXS_1(**kwargs):
+    return VideoDiT(depth=4, hidden_size=128, patch_size=1, num_heads=4, **kwargs)
 
-DiT_models = {
-    'DiT-XL/2': DiT_XL_2,  'DiT-XL/1': DiT_XL_1,  'DiT-XL/4': DiT_XL_4,  'DiT-XL/8': DiT_XL_8,
-    'DiT-L/2':  DiT_L_2,   'DiT-L/1':  DiT_L_1,   'DiT-L/4':  DiT_L_4,   'DiT-L/8':  DiT_L_8,
-    'DiT-B/2':  DiT_B_2,   'DiT-B/1':  DiT_B_1,   'DiT-B/4':  DiT_B_4,   'DiT-B/8':  DiT_B_8,
-    'DiT-S/2':  DiT_S_2,   'DiT-S/1':  DiT_S_1,   'DiT-S/4':  DiT_S_4,   'DiT-S/8':  DiT_S_8,
-    'DiT-XS/1': DiT_XS_1,  'DiT-XS/2': DiT_XS_2,  'DiT-XS/4': DiT_XS_4,  'DiT-XS/8': DiT_XS_8,
-    'DiT-XXS/1': DiT_XXS_1, 'DiT-XXS/2': DiT_XXS_2, 'DiT-XXS/4': DiT_XXS_4, 'DiT-XXS/8': DiT_XXS_8,
-    'DiT-XXXS/1': DiT_XXXS_1
+VideoDiT_models = {
+    'VideoDiT-XL/2': VideoDiT_XL_2, 'VideoDiT-XL/1': VideoDiT_XL_1, 'VideoDiT-XL/4': VideoDiT_XL_4, 'VideoDiT-XL/8': VideoDiT_XL_8,
+    'VideoDiT-L/2': VideoDiT_L_2, 'VideoDiT-L/1': VideoDiT_L_1, 'VideoDiT-L/4': VideoDiT_L_4, 'VideoDiT-L/8': VideoDiT_L_8,
+    'VideoDiT-B/2': VideoDiT_B_2, 'VideoDiT-B/1': VideoDiT_B_1, 'VideoDiT-B/4': VideoDiT_B_4, 'VideoDiT-B/8': VideoDiT_B_8,
+    'VideoDiT-S/2': VideoDiT_S_2, 'VideoDiT-S/1': VideoDiT_S_1, 'VideoDiT-S/4': VideoDiT_S_4, 'VideoDiT-S/8': VideoDiT_S_8,
+    'VideoDiT-XS/1': VideoDiT_XS_1, 'VideoDiT-XS/2': VideoDiT_XS_2, 'VideoDiT-XS/4': VideoDiT_XS_4, 'VideoDiT-XS/8': VideoDiT_XS_8,
+    'VideoDiT-XXS/1': VideoDiT_XXS_1, 'VideoDiT-XXS/2': VideoDiT_XXS_2, 'VideoDiT-XXS/4': VideoDiT_XXS_4, 'VideoDiT-XXS/8': VideoDiT_XXS_8,
+    'VideoDiT-XXXS/1': VideoDiT_XXXS_1
 }

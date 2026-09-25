@@ -526,7 +526,7 @@ class Unet1D(Module):
         """
         return [p for p in self.parameters() if p.dim() == 2]
 
-    def get_not_2d_params(self):
+    def get_1d_params(self):
         """
         Return parameters not suitable for Muon optimizer (1D parameters like biases).
         """

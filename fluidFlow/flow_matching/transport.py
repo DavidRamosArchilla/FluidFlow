@@ -605,6 +605,8 @@ class FlowMatching(nn.Module):
         )
         batch_size = classes.shape[0]
         z = torch.randn(batch_size, self.neural_net.channels, *self.input_size, device=classes.device)
+        if getattr(self.neural_net, "is_video", False):
+            z = torch.randn(batch_size, self.neural_net.num_frames, self.neural_net.channels, *self.input_size, device=classes.device)
         model_fn = self.neural_net.forward_with_cond_scale
         model_kwargs["classes"] = classes
         if "cond_scale" not in model_kwargs:
