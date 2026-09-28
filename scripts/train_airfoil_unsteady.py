@@ -1,8 +1,10 @@
-from data.load_airfoil_unsteady import load_airfoil_unsteady
+from data.load_airfoil_unsteady import load_airfoil_unsteady, load_meta
 from fluidFlow.video_dit import VideoDiT
 from fluidFlow.trainer import Trainer
 from fluidFlow.flow_matching import create_flow_matching
+from fluidFlow.evaluation import AirfoilUnsteadyEvaluator, AirfoilUnsteadyFFTEvaluator
 
+import json
 import os
 import shutil
 
@@ -26,7 +28,7 @@ except Exception:
 data_dir = "data/airfoil_unsteady/airfoil"
 
 # ---------- data config ----------
-channels = 3              # 3->[u,v,p]  4->[u,v,p,rho]
+channels = 4              # 3->[u,v,p]  4->[u,v,p,rho]
 time_frames = 601         # temporal subsampling (None for the full 601 frames)
 time_mode = "uniform"     # "uniform" or "first"
 max_train_samples = None
@@ -41,7 +43,11 @@ factorize = True          # True if time_frames > 32 to save memory
 # ---------- training config ----------
 train_lr = 1e-4
 train_steps = 100000
-results_folder = 'results/airfoil_unsteady_experiment'
+results_folder = 'results/airfoil_unsteady/linear_d6_p8_no_factorize'
+# ---------- evaluation config ----------
+eval_space = "physical"  # "physical", "normalized" or "both"
+eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
+eval_fft_samples = "auto"  # FFT samples: "auto", "auto:K" or "i,j,k"
 # -----------------------------------
 
 # FA4 H200 compatibility: head_dim must be 32/64/128
@@ -131,13 +137,67 @@ trainer = Trainer(
 )
 
 shutil.copy(__file__, os.path.join(results_folder, os.path.basename(__file__)))
+# save norm stats for denormalization at eval (standalone or below)
+torch.save(
+    {
+        "fields_mean": coefficients["fields_mean"],
+        "fields_std": coefficients["fields_std"],
+        "conds_mean": coefficients["conds_mean"],
+        "conds_std": coefficients["conds_std"],
+        "target_length": coefficients["target_length"],
+        "original_length": coefficients["original_length"],
+    },
+    os.path.join(results_folder, "norm_stats.pt"),
+)
 
-trainer.train()
+# trainer.train()
 
-# Inference on the test set (no metric evaluation for the moment)
+# Inference on the test set
 trainer.ema.ema_model.eval()
 # this will sample with multiple gpus, if available
-samples, seqs = trainer.eval_model(dataset_test, batch_size=1, use_autocast=True)
+if os.path.exists(f"{results_folder}/test_predictions_ema.pt"):
+    samples = torch.load(f"{results_folder}/test_predictions_ema.pt")
+else:
+    samples, seqs = trainer.eval_model(dataset_test, batch_size=1, use_autocast=True)
 
 if trainer.accelerator.is_main_process:
     torch.save(samples, f"{results_folder}/test_predictions_ema.pt")
+
+    # ---- final evaluation (physical units) ----
+    n_channels = fields_shape[2]
+    channel_names = ["u", "v", "p", "rho"][:n_channels]
+    orig_len = coefficients["original_length"]
+    fmean = coefficients["fields_mean"].cpu()
+    fstd = coefficients["fields_std"].cpu()
+    samples_denorm = samples.cpu()[..., :orig_len] * fstd + fmean
+    test_data = dataset_test.tensors[0].cpu()[..., :orig_len]
+    test_data_denorm = test_data * fstd + fmean
+    conds_denorm = (dataset_test.tensors[1].cpu() * coefficients["conds_std"].cpu()
+                    + coefficients["conds_mean"].cpu())
+    mesh_pos = np.asarray(coefficients["mesh_pos"])[0]  # (L, 2)
+    cells = np.asarray(coefficients["cells"])[0]  # (M, 3)
+    node_type = np.asarray(coefficients["node_type"])  # (L,)
+
+    fields_eval = AirfoilUnsteadyEvaluator(
+        out_dir=os.path.join(results_folder, "eval_fields"),
+        channel_names=channel_names,
+        space=eval_space,
+        sample_idx=eval_sample,
+    )
+    fields_eval(
+        test_data_denorm, samples_denorm,
+        mesh_pos=mesh_pos, node_type=node_type, cells=cells,
+        conds=conds_denorm,
+        norm_stats={"fields_mean": fmean, "fields_std": fstd},
+    )
+    fields_eval.print_metrics()
+
+    meta = load_meta(os.path.join(data_dir, "meta.json"))
+    fft_eval = AirfoilUnsteadyFFTEvaluator(
+        out_dir=os.path.join(results_folder, "eval_fft"),
+        dt=float(meta.get("dt", 0.0002)),
+        channel_names=channel_names,
+        samples=eval_fft_samples,
+    )
+    fft_eval(test_data_denorm, samples_denorm, conds=conds_denorm, mesh_pos=mesh_pos)
+    fft_eval.print_metrics()

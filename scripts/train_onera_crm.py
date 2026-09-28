@@ -2,7 +2,9 @@ from data.load_onera_crm import load_onera_crm
 from fluidFlow.dit import DiT
 from fluidFlow.trainer import Trainer
 from fluidFlow.flow_matching import create_flow_matching
+from fluidFlow.evaluation import RegressionEvaluator
 
+import json
 import torch
 
 
@@ -69,6 +71,8 @@ if trainer.accelerator.is_main_process:
     samples = (samples.cpu() * coefficients['train_std']) + coefficients['train_mean']
     torch.save(samples, f"{results_folder}/test_predictions_ema.pt")
     test_data = (dataset_test.tensors[0].cpu() * coefficients['train_std']) + coefficients['train_mean']
-    mse = torch.mean((samples - test_data) ** 2)
-    mae = torch.mean(torch.abs(samples - test_data))
-    print(f"Test MSE: {mse.item()}, Test MAE: {mae.item()}")
+    evaluator = RegressionEvaluator()
+    metrics = evaluator(test_data, samples)
+    evaluator.print_metrics()
+    with open(f"{results_folder}/metrics.json", "w") as f:
+        json.dump({k: float(v) for k, v in metrics.items()}, f, indent=2)

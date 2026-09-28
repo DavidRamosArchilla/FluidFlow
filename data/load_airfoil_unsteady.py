@@ -58,7 +58,7 @@ def extract_conditions(velocity, density, pressure, node_type, gamma=1.4):
 
 def load_airfoil_split(split="train", base_dir=None, meta_path=None, channels=3,
                        time_frames=None, time_mode="uniform", max_samples=None,
-                       dtype=np.float32):
+                       dtype=np.float32, return_node_type=False):
     import tensorflow as tf
     tf.config.set_visible_devices([], 'GPU')
     if meta_path is None:
@@ -71,6 +71,7 @@ def load_airfoil_split(split="train", base_dir=None, meta_path=None, channels=3,
     cond_list = []
     mesh_pos_ref = None
     cells_ref = None
+    node_type_ref = None
     if time_frames is None or time_frames >= T_FULL:
         time_idx = None
     else:
@@ -93,6 +94,7 @@ def load_airfoil_split(split="train", base_dir=None, meta_path=None, channels=3,
         if mesh_pos_ref is None:
             mesh_pos_ref = out["mesh_pos"]
             cells_ref = out["cells"]
+            node_type_ref = out["node_type"]
         if time_idx is not None:
             vel = vel[time_idx]
             press = press[time_idx]
@@ -122,6 +124,9 @@ def load_airfoil_split(split="train", base_dir=None, meta_path=None, channels=3,
     print(f"[{split}] data shape {data_torch.shape} (N,F,C,Nnodes) dtype {data_torch.dtype}")
     print(f"[{split}] cond shape {cond_torch.shape} Mach [{cond_torch[:, 0].min():.3f},{cond_torch[:, 0].max():.3f}] Alpha [{cond_torch[:, 1].min():.2f},{cond_torch[:, 1].max():.2f}]")
     print(f"  mesh_pos {mesh_pos_ref.shape} cells {cells_ref.shape}")
+    if return_node_type:
+        # (1, L, 1) -> (L,) node types: 0 interior, 2 wall, 4 farfield
+        return data_torch, cond_torch, mesh_pos_ref, cells_ref, node_type_ref[0, :, 0]
     return data_torch, cond_torch, mesh_pos_ref, cells_ref
 
 
@@ -140,13 +145,15 @@ def load_airfoil_unsteady(data_dir, channels=3, time_frames=None, time_mode="uni
 
     Returns:
         dataset_train, dataset_valid, dataset_test, coefficients, where coefficients
-        holds the normalization stats (fields/conds mean and std) plus the
-        padding info (target_length, original_length), like ``load_onera_crm``.
+        holds the normalization stats (fields/conds mean and std), the
+        padding info (target_length, original_length) and the mesh
+        (mesh_pos, cells, node_type), like ``load_onera_crm``.
     """
     print("Loading airfoil unsteady data...")
-    fields_train, conds_train, mesh_pos, cells = load_airfoil_split(
+    fields_train, conds_train, mesh_pos, cells, node_type = load_airfoil_split(
         split="train", base_dir=data_dir, channels=channels,
-        time_frames=time_frames, time_mode=time_mode, max_samples=max_train_samples)
+        time_frames=time_frames, time_mode=time_mode, max_samples=max_train_samples,
+        return_node_type=True)
     fields_valid, conds_valid, _, _ = load_airfoil_split(
         split="valid", base_dir=data_dir, channels=channels,
         time_frames=time_frames, time_mode=time_mode, max_samples=max_valid_samples)
@@ -207,5 +214,6 @@ def load_airfoil_unsteady(data_dir, channels=3, time_frames=None, time_mode="uni
         'original_length': original_length,
         'mesh_pos': mesh_pos,
         'cells': cells,
+        'node_type': node_type,
     }
     return dataset_train, dataset_valid, dataset_test, coefficients

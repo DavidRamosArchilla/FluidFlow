@@ -12,6 +12,7 @@ __all__ = [
     "trainer",
     "unet",
     "flow_matching",
+    "evaluation",
 ]
 
 __version__ = "0.1.0"

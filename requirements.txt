@@ -7,3 +7,4 @@ ema_pytorch
 tqdm
 matplotlib
 scipy
+pillow

@@ -1,3 +1,6 @@
+# project
+results/
+data/airfoil_unsteady/airfoil
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
