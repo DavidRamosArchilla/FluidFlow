@@ -102,7 +102,7 @@ trainer.train()
 ```
 Samples and model checkpoints will be logged to `./results` periodically
 
-### **NEW**: Added support for Muon optimizer
+### Added support for Muon optimizer
 
 To enable it, just set `use_muon=True` when defining the `Trainer`. Muon is a new optimizer that can improve model performance and model convergence. For more details, check out the <a href="https://arxiv.org/abs/2502.16982">Muon reference</a>.
 
