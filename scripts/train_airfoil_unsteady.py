@@ -150,7 +150,7 @@ torch.save(
     os.path.join(results_folder, "norm_stats.pt"),
 )
 
-# trainer.train()
+trainer.train()
 
 # Inference on the test set
 trainer.ema.ema_model.eval()
