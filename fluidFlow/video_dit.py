@@ -12,6 +12,7 @@ get_2d_params / get_1d_params). ``is_video`` is always True so
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import repeat, rearrange, pack, unpack
 import numpy as np
 from timm.models.vision_transformer import PatchEmbed, Mlp
@@ -476,6 +477,7 @@ class VideoDiT(nn.Module):
             ])
 
         self.initialize_weights()
+        self.gradient_checkpointing = False
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -575,7 +577,10 @@ class VideoDiT(nn.Module):
         y = self.y_embedder(classes, self.training, force_drop_ids)  # (N, D)
         c = t + y  # (N, D)
         for block in self.blocks:
-            x = block(x, c, self.feat_rope)  # (N, T, D)
+            if self.gradient_checkpointing:
+                x = checkpoint(block, x, c, self.feat_rope, use_reentrant=False)
+            else:
+                x = block(x, c, self.feat_rope) 
         act = x
         x = self.final_layer(x, c)  # (B, F*S, patch_size * out_channels)
         x = self.unpatchify(x)  # (B, F, out_channels, ...)
@@ -649,7 +654,12 @@ class VideoDiT(nn.Module):
         Return parameters not suitable for Muon optimizer (1D parameters like biases).
         """
         return [p for p in self.parameters() if p.dim() != 2]
-
+    
+    def enable_gradient_checkpointing(self):
+        """
+        Enable gradient checkpointing for the model.
+        """
+        self.gradient_checkpointing = True
 
 #################################################################################
 #                   Sine/Cosine Positional Embedding Functions                  #

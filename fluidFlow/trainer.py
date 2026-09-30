@@ -85,7 +85,8 @@ class Trainer(object):
         eta_min_scheduler=None,
         compile_model=False,
         use_fsdop=False,
-        use_muon=False
+        use_muon=False,
+        gradient_checkpointing=False,
     ):
         super().__init__()
 
@@ -172,7 +173,11 @@ class Trainer(object):
 
         # step counter state
         self.step = 0
-
+        if gradient_checkpointing:
+            if hasattr(self.model, 'enable_gradient_checkpointing'):
+                self.model.enable_gradient_checkpointing()
+            else:
+                print("Warning: The model does not have an 'enable_gradient_checkpointing' method. Gradient checkpointing may not be enabled.")
         # prepare model, dataloader, optimizer with accelerator
         self.cond_dim = diffusion_model.cond_dim
         if self.use_muon:
