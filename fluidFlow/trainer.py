@@ -61,7 +61,7 @@ def unsharded(model):
             m.reshard()
 
 # trainer class
-class Trainer(object):
+class Trainer:
     def __init__(
         self,
         diffusion_model,
@@ -86,6 +86,9 @@ class Trainer(object):
         compile_model=False,
         use_fsdop=False,
         use_muon=False,
+        muon_lr=None,
+        muon_weight_decay=1e-3,
+        muon_adjust_lr_fn=None,
         gradient_checkpointing=False,
     ):
         super().__init__()
@@ -143,20 +146,25 @@ class Trainer(object):
             neural_net = diffusion_model.neural_net if hasattr(diffusion_model, "neural_net") else diffusion_model
             muon_params = neural_net.get_2d_params()
             adam_params = neural_net.get_1d_params()
-            self.opt_muon = torch.optim.Muon(muon_params, lr=train_lr, weight_decay=1e-3)
+            # muon_lr defaults to train_lr. With adjust_lr_fn=None ("original") the
+            # orthogonalised update has RMS ~ lr / sqrt(max(fan_in, fan_out)), i.e. much
+            # smaller than an AdamW step at the same lr; "match_rms_adamw" rescales it so
+            # muon_lr can be set on the same scale as the AdamW lr.
+            self.muon_lr = train_lr if muon_lr is None else muon_lr
+            self.opt_muon = torch.optim.Muon(muon_params, lr=self.muon_lr, weight_decay=muon_weight_decay, adjust_lr_fn=muon_adjust_lr_fn)
             self.opt_adam = AdamW(adam_params, lr=train_lr, betas=adam_betas, weight_decay=1e-2, fused=True, eps=eps)
-            self.opts = [self.opt_muon, self.opt_adam]
             self.use_muon = True
         else:
             self.opt = AdamW(diffusion_model.parameters(), lr=train_lr, betas=adam_betas, weight_decay=1e-2, fused=True, eps=eps)
-            self.opts = [self.opt]
             self.use_muon = False
         # cosine annealing lr scheduler
         self.use_lr_scheduler = eta_min_scheduler is not None
         if self.use_lr_scheduler:
             if self.use_muon:
                 # Use schedulers for both optimizers
-                self.scheduler_muon = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt_muon, T_max=self.train_num_steps, eta_min=eta_min_scheduler)
+                # keep the same final/peak lr ratio for Muon when muon_lr != train_lr
+                eta_min_muon = eta_min_scheduler * self.muon_lr / train_lr
+                self.scheduler_muon = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt_muon, T_max=self.train_num_steps, eta_min=eta_min_muon)
                 self.scheduler_adam = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt_adam, T_max=self.train_num_steps, eta_min=eta_min_scheduler)
                 self.scheduler_muon = self.accelerator.prepare_scheduler(self.scheduler_muon)
                 self.scheduler_adam = self.accelerator.prepare_scheduler(self.scheduler_adam)
@@ -182,8 +190,11 @@ class Trainer(object):
         self.cond_dim = diffusion_model.cond_dim
         if self.use_muon:
             self.model, self.opt_muon, self.opt_adam = self.accelerator.prepare(self.model, self.opt_muon, self.opt_adam)
+            self.opts = [self.opt_muon, self.opt_adam]
         else:
             self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
+            self.opts = [self.opt]
+
         if compile_model:
             print("Compiling model...")
             self.model = torch.compile(self.model) # mode="reduce-overhead"
@@ -300,6 +311,10 @@ class Trainer(object):
         profiler = None
         PROFILE_START_STEP = 25
         PROFILE_ACTIVE_STEPS = 15 
+        # loss summed over the micro-batches of one optimizer step, so the logged
+        # value is the mean over the whole effective batch instead of the last micro-batch
+        accum_loss = torch.zeros((), device=device)
+        accum_count = 0
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
             while self.step < self.train_num_steps:
                 if do_profiling and self.step == PROFILE_START_STEP and profiler is None:
@@ -315,7 +330,6 @@ class Trainer(object):
                         print(f"[Profiler] Started at step {self.step}")
 
                 self.model.train()
-                total_loss = 0.
                 # for _ in range(self.gradient_accumulate_every):
                 data = next(self.dl)#.to(device)
                 with accelerator.accumulate(self.model):
@@ -324,6 +338,8 @@ class Trainer(object):
                         loss = self.model(sequence, classes=classes)
 
                     self.accelerator.backward(loss)
+                    accum_loss += loss.detach().float()
+                    accum_count += 1
                     # accelerator.wait_for_everyone()
                     if accelerator.sync_gradients:
                         if self.max_grad_norm is not None:
@@ -353,8 +369,11 @@ class Trainer(object):
                     with unsharded(self.model):
                         if self.accelerator.is_main_process:
                             self.ema.update()
+                    # average over micro-batches and processes (all ranks reach this point)
+                    total_loss = accelerator.reduce(accum_loss / accum_count, reduction="mean").item()
+                    accum_loss.zero_()
+                    accum_count = 0
                     if accelerator.is_main_process:
-                        total_loss += loss.detach().float().mean().cpu().item()
                         self.loss_history.append(total_loss)
                         pbar.set_description(f'loss: {total_loss:.5f}')
                         pbar.update(1)
@@ -434,7 +453,7 @@ class Trainer(object):
         if self.test_loss_history:
             test_x_values = list(range(self.save_and_sample_every, self.step+1, self.save_and_sample_every))
             # print(test_x_values, self.test_loss_history)
-            plt.plot(test_x_values, self.test_loss_history, label='Test Loss')    
+            plt.plot(test_x_values, self.test_loss_history, label='Validation sample MSE')    
         # Compute moving average
         window_size = 100
         if len(self.loss_history) >= window_size:

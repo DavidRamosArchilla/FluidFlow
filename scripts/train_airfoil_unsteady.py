@@ -44,9 +44,17 @@ hidden_size = 1024
 num_heads = 16
 factorize = True          # True if time_frames > 32 to save memory
 # ---------- training config ----------
-train_lr = 1e-4
-train_steps = 100000
-results_folder = 'results/airfoil_unsteady/d8_p1_latent'
+train_lr = 2e-4           # AdamW lr (1D params: biases, norms, patch embedder)
+train_steps = 100000      # optimizer steps (each = gradient_accumulate_every micro-batches)
+# Muon (2D weights). "match_rms_adamw" scales the orthogonalised update to the
+# AdamW update size, so muon_lr lives on the same scale as train_lr. With the
+# default "original" scaling, lr=1e-4 gives ~30x smaller updates than AdamW.
+muon_lr = 2e-4
+muon_adjust_lr_fn = "match_rms_adamw"
+muon_weight_decay = 1e-2
+ema_decay = 0.999         # EMA horizon ~10k steps (0.995 -> ~2k steps)
+use_lognorm = True        # logit-normal timestep sampling instead of uniform
+results_folder = 'results/airfoil_unsteady/d8_p1_latent_v2'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -182,6 +190,7 @@ flow_matching = create_flow_matching(
     cond_scale=2.0,
     sampling_method="euler",
     num_sampling_steps=100,
+    use_lognorm=use_lognorm,
 )
 
 trainer = Trainer(
@@ -192,7 +201,7 @@ trainer = Trainer(
     train_lr=train_lr,
     train_num_steps=train_steps,
     gradient_accumulate_every=16,  # gradient accumulation steps
-    ema_decay=0.995,  # exponential moving average decay
+    ema_decay=ema_decay,  # exponential moving average decay
     amp=True,  # turn on mixed precision
     mixed_precision_type='bf16',
     results_folder=results_folder,  # folder to save results to
@@ -200,6 +209,9 @@ trainer = Trainer(
     eta_min_scheduler=1e-6,
     max_grad_norm=1.0,
     use_muon=True,
+    muon_lr=muon_lr,
+    muon_adjust_lr_fn=muon_adjust_lr_fn,
+    muon_weight_decay=muon_weight_decay,
     # compile_model=True,
     split_batches=True,
 )
@@ -218,8 +230,8 @@ torch.save(
     os.path.join(results_folder, "norm_stats.pt"),
 )
 
-# trainer.train()
-trainer.load(5)
+trainer.train()
+# trainer.load(5)
 
 # Inference on the test set
 trainer.ema.ema_model.eval()
