@@ -36,12 +36,12 @@ channels = 4               # 3->[u,v,p]  4->[u,v,p,rho]
 # LTX causal time compression needs F = 1 + 8*k -> 297 = 1 + 8*37 or 601 = 1 + 8*75
 time_frames = 601
 time_mode = "uniform"      # "uniform" or "first"
-max_train_samples = 32     # None for full 1000
-max_valid_samples = 8      # None for full 100
-max_test_samples = 8       # None for full 100
-# max_train_samples = None  
-# max_valid_samples = None   
-# max_test_samples = None  
+# max_train_samples = 32     # None for full 1000
+# max_valid_samples = 8      # None for full 100
+# max_test_samples = 8       # None for full 100
+max_train_samples = None  
+max_valid_samples = None   
+max_test_samples = None  
 # VAE size: LTX-faithful would be base=128/latent=128 (very heavy);
 # start small, raise latent_channels toward 128 once it reconstructs well.
 base_channels = 64
@@ -52,7 +52,7 @@ train_batch_size = 16
 gradient_accumulate_every = 1
 train_lr = 1e-4
 train_steps = 70000
-results_folder = 'results/airfoil_unsteady/first_4_channels'
+results_folder = 'results/airfoil_unsteady/vae_32_channels'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -170,7 +170,7 @@ def extract_latents(vae, dataset, batch_size=8, device="cuda",
 
 @torch.inference_mode()
 def save_latents(vae, dataset_train, dataset_test, save_dir,
-                 batch_size=8, device="cuda", num_workers=4):
+                 dataset_val=None, batch_size=8, device="cuda", num_workers=4):
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,6 +196,12 @@ def save_latents(vae, dataset_train, dataset_test, save_dir,
     print("\nAfter standardisation:")
     print(f"  train — mean: {z_train_norm.mean():.6f}  std: {z_train_norm.std():.6f}")
     print(f"  test  — mean: {z_test_norm.mean():.6f}   std: {z_test_norm.std():.6f}")
+    if dataset_val is not None:
+        z_val = extract_latents(vae, dataset_val, batch_size, device,
+                                num_workers, desc="Valid latents")
+        z_val_norm = (z_val - mean) / std
+        print(f"  valid — mean: {z_val_norm.mean():.6f}  std: {z_val_norm.std():.6f}")
+        np.save(save_dir / "latents_valid.npy", z_val_norm.numpy())
 
     np.save(save_dir / "latents_train.npy", z_train_norm.numpy())
     np.save(save_dir / "latents_test.npy", z_test_norm.numpy())
@@ -248,5 +254,5 @@ if trainer.accelerator.is_main_process:
     fft_eval(test_data_denorm, recs_denorm, conds=conds_denorm, mesh_pos=mesh_pos)
     fft_eval.print_metrics()
 
-    save_latents(vae, train_dataset, test_dataset,
+    save_latents(vae, train_dataset, test_dataset, dataset_val=valid_dataset,
                  save_dir=results_folder, batch_size=2, device=trainer.device)
