@@ -1,6 +1,8 @@
 # project
 results/
 data/airfoil_unsteady/airfoil
+run_job.sh
+logs/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

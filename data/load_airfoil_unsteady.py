@@ -17,7 +17,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import TensorDataset
+from torch.utils.data import Dataset, TensorDataset
 
 
 T_FULL = 601  # number of timesteps per trajectory in the raw files
@@ -217,3 +217,86 @@ def load_airfoil_unsteady(data_dir, channels=3, time_frames=None, time_mode="uni
         'node_type': node_type,
     }
     return dataset_train, dataset_valid, dataset_test, coefficients
+
+
+# --------------------------------------------------------------------------
+# Autoregressive (one-step) datasets
+# --------------------------------------------------------------------------
+
+class AutoregressivePairDataset(Dataset):
+    """One-step pairs (u_{t+1}, conds, u_t) built lazily from (N, F, C, L) fields.
+
+    Items are ordered as ``(target, conds, context)`` so the Trainer passes
+    ``context`` (the current state) as model input and compares against the
+    next state. No pair tensor is materialised, so memory stays at the size
+    of ``fields``.
+
+    Args:
+        fields: (N, F, C, L) tensor (normalized fields or latents).
+        conds: (N, cond_dim) tensor.
+        frame_stride: keep every ``frame_stride``-th starting frame t
+            (e.g. to subsample the validation pairs).
+        max_pairs: optional cap on the number of pairs (evenly spaced).
+    """
+    def __init__(self, fields, conds, frame_stride=1, max_pairs=None):
+        assert fields.ndim == 4 and fields.shape[1] > 1, "fields must be (N, F, C, L) with F > 1"
+        assert fields.shape[0] == conds.shape[0]
+        self.fields = fields
+        self.conds = conds
+        starts = torch.arange(0, fields.shape[1] - 1, frame_stride)
+        sims = torch.arange(fields.shape[0])
+        # (P, 2) list of (sim, t)
+        self.index = torch.stack(torch.meshgrid(sims, starts, indexing="ij"), dim=-1).reshape(-1, 2)
+        if max_pairs is not None and len(self.index) > max_pairs:
+            keep = torch.linspace(0, len(self.index) - 1, max_pairs).long()
+            self.index = self.index[keep]
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, i):
+        n, t = self.index[i].tolist()
+        return self.fields[n, t + 1], self.conds[n], self.fields[n, t]
+
+
+def make_pair_dataset(dataset, frame_stride=1, max_pairs=None):
+    """(fields, conds) TensorDataset -> :class:`AutoregressivePairDataset`."""
+    fields, conds = dataset.tensors[0], dataset.tensors[1]
+    return AutoregressivePairDataset(fields, conds, frame_stride=frame_stride, max_pairs=max_pairs)
+
+
+def make_rollout_dataset(dataset):
+    """(fields, conds) TensorDataset -> (fields, conds, fields[:, 0]).
+
+    Used to evaluate full autoregressive rollouts: the model receives the
+    initial frame as ``context`` and the whole trajectory is the target.
+    """
+    fields, conds = dataset.tensors[0], dataset.tensors[1]
+    return TensorDataset(fields, conds, fields[:, 0].contiguous())
+
+
+@torch.no_grad()
+def compute_delta_stats(fields, valid_length=None, chunk=16):
+    """Per-channel mean/std of the one-step increments u_{t+1} - u_t.
+
+    fields: (N, F, C, L). Computed in chunks over N (float64 accumulation) to
+    avoid materialising the full difference tensor. Nodes beyond
+    ``valid_length`` (padding) are ignored.
+
+    Returns (mean, std), each of shape (C,).
+    """
+    n_ch = fields.shape[2]
+    s1 = torch.zeros(n_ch, dtype=torch.float64)
+    s2 = torch.zeros(n_ch, dtype=torch.float64)
+    count = 0
+    for i in range(0, fields.shape[0], chunk):
+        x = fields[i:i + chunk]
+        if valid_length is not None:
+            x = x[..., :valid_length]
+        d = (x[:, 1:] - x[:, :-1]).double()  # (n, F-1, C, L)
+        s1 += d.sum(dim=(0, 1, 3))
+        s2 += (d ** 2).sum(dim=(0, 1, 3))
+        count += d.shape[0] * d.shape[1] * d.shape[3]
+    mean = s1 / count
+    std = (s2 / count - mean ** 2).clamp(min=1e-24).sqrt()
+    return mean.float(), std.float()

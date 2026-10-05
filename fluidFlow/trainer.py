@@ -334,8 +334,10 @@ class Trainer:
                 data = next(self.dl)#.to(device)
                 with accelerator.accumulate(self.model):
                     sequence, classes = data[0].to(device), data[1].to(device)
+                    # optional third tensor: model input/context (e.g. u_t for autoregressive models)
+                    model_kwargs = {"context": data[2].to(device)} if len(data) > 2 else {}
                     with self.accelerator.autocast():
-                        loss = self.model(sequence, classes=classes)
+                        loss = self.model(sequence, classes=classes, **model_kwargs)
 
                     self.accelerator.backward(loss)
                     accum_loss += loss.detach().float()
@@ -384,7 +386,7 @@ class Trainer:
                         model_state_dict = accelerator.get_state_dict(self.model)
                         milestone = self.step // self.save_and_sample_every
                         if self.dl_test is not None:
-                            samples, sequences = self.eval_model(self.dl_test.dataset, batch_size=self.batch_size)
+                            samples, sequences = self.eval_model(self.dl_test.dataset, batch_size=self.batch_size, use_autocast=True)
                             if accelerator.is_main_process:
                                 mse = ((samples - sequences) ** 2).mean()
                                 test_losses = mse.cpu().item()
@@ -427,9 +429,10 @@ class Trainer:
         all_seqs = []
         for data in tqdm(test_dataloader, disable=not self.accelerator.is_main_process):
             sequence, classes = data[0], data[1]
+            model_kwargs = {"context": data[2]} if len(data) > 2 else {}
             with torch.inference_mode():    
                 with (self.accelerator.autocast() if use_autocast else nullcontext()):
-                    pred = model.sample(classes=classes, **sampling_kwargs)
+                    pred = model.sample(classes=classes, **model_kwargs, **sampling_kwargs)
 
                 # gather_for_metrics works automatically for both single and multi-GPU
                 gathered_pred, sequence = self.accelerator.gather_for_metrics((pred, sequence))
