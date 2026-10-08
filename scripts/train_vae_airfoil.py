@@ -45,14 +45,14 @@ max_test_samples = None
 # VAE size: LTX-faithful would be base=128/latent=128 (very heavy);
 # start small, raise latent_channels toward 128 once it reconstructs well.
 base_channels = 64
-latent_channels = 32
+latent_channels = 8
 patch_size = 1
 kl_weight = 1e-6
 train_batch_size = 16
 gradient_accumulate_every = 1
 train_lr = 1e-4
 train_steps = 70000
-results_folder = 'results/airfoil_unsteady/vae_32_channels'
+results_folder = 'results/airfoil_unsteady/vae_8_channels'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -212,7 +212,11 @@ def save_latents(vae, dataset_train, dataset_test, save_dir,
 if trainer.accelerator.is_main_process:
     vae = trainer._unwrapped_model()
     recs = reconstruct_test(vae, test_dataset, batch_size=1, device=trainer.device)
-    torch.save(recs, os.path.join(results_folder, "reconstructions.pt"))
+    # if os.path.exists(os.path.join(results_folder, "reconstructions.pt")):
+    #     recs = torch.load(os.path.join(results_folder, "reconstructions.pt"))
+    # else:
+    #     recs = reconstruct_test(vae, test_dataset, batch_size=1, device=trainer.device)
+    #     torch.save(recs, os.path.join(results_folder, "reconstructions.pt"))
 
     # ---- final evaluation, same as train_airfoil_unsteady.py (physical units) ----
     # back to (N, F, C, L) loader layout, trim mesh padding, denormalize

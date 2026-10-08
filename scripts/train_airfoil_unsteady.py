@@ -54,7 +54,7 @@ muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999         # EMA horizon ~10k steps (0.995 -> ~2k steps)
 use_lognorm = True        # logit-normal timestep sampling instead of uniform
-results_folder = 'results/airfoil_unsteady/d8_p1_latent_v2'
+results_folder = 'results/airfoil_unsteady/d8_p1_latent_lognorm_v2'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -230,7 +230,7 @@ torch.save(
     os.path.join(results_folder, "norm_stats.pt"),
 )
 
-trainer.train()
+# trainer.train()
 # trainer.load(5)
 
 # Inference on the test set

@@ -117,6 +117,60 @@ def mean_welch_spectrum(sig, fs, nperseg):
     return f, Pxx.mean(axis=1)
 
 
+def airfoil_box(mesh_pos, node_type, margin=0.65, aspect=1.5):
+    """(xmin, xmax, ymin, ymax) around the airfoil wall nodes (node_type == 2):
+    chord + `margin` chords on each side in x, height = width / `aspect`.
+    Used both as GIF zoom and as the default RMSE region of interest."""
+    mx, my = mesh_pos[:, 0], mesh_pos[:, 1]
+    wall = mx[node_type == 2], my[node_type == 2]
+    chord = float(wall[0].max() - wall[0].min())
+    m = margin * chord
+    xmin, xmax = float(wall[0].min() - m), float(wall[0].max() + m)
+    yc = float(0.5 * (wall[1].min() + wall[1].max()))
+    half_y = (xmax - xmin) / 2 / aspect
+    return xmin, xmax, yc - half_y, yc + half_y
+
+
+def momentum_rollout_rmse(gt, pred, channel_names, horizons=(50,), node_mask=None):
+    """MeshGraphNets-style rollout RMSE of the momentum (rho*u, rho*v).
+
+    Mean over both momentum components, all nodes, all rollout steps and all
+    trajectories, then sqrt. The initial frame (given to the model) is
+    excluded. *_std / *_stderr are the standard deviation / standard error
+    of the per-trajectory RMSE across trajectories.
+    Expects physical (N, F, C, L) fields with "u", "v", "rho" channels.
+    node_mask: optional (L,) bool, restricts the error to those nodes
+    (e.g. a region of interest around the wing).
+    """
+    iu, iv, ir = (channel_names.index(k) for k in ("u", "v", "rho"))
+    n, n_frames = gt.shape[:2]
+    nodes = slice(None) if node_mask is None else np.asarray(node_mask, dtype=bool)
+    horizons = [h for h in horizons if h < n_frames - 1]
+    mse_all = np.zeros(n)
+    mse_h = {h: np.zeros(n) for h in horizons}
+    for i in range(n):  # per trajectory to keep memory bounded
+        g = gt[i, 1:][..., nodes].astype(np.float64)
+        p = pred[i, 1:][..., nodes].astype(np.float64)
+        m_g = g[:, [iu, iv]] * g[:, ir:ir + 1]
+        m_p = p[:, [iu, iv]] * p[:, ir:ir + 1]
+        se_step = ((m_p - m_g) ** 2).mean(axis=(1, 2))  # (F-1,)
+        mse_all[i] = se_step.mean()
+        for h in horizons:
+            mse_h[h][i] = se_step[:h].mean()
+
+    def summarize(mse, key):
+        per_traj = np.sqrt(mse)
+        std = float(per_traj.std(ddof=1)) if n > 1 else 0.0
+        return {key: float(np.sqrt(mse.mean())),
+                f"{key}_std": std,
+                f"{key}_stderr": std / np.sqrt(n)}
+
+    out = summarize(mse_all, "rollout_all")
+    for h in horizons:
+        out.update(summarize(mse_h[h], f"rollout_{h}"))
+    return out
+
+
 def print_metrics_block(title, metrics):
     print(f"\n{title}")
     for key, value in metrics.items():
@@ -148,6 +202,10 @@ class AirfoilUnsteadyEvaluator(Evaluator):
         mach_min / aoa_lim: filters for the auto-selection pool.
         frame_stride / fps / dpi / levels / cmap_pred / cmap_err / zoom:
             GIF and plot rendering options.
+        roi: region of interest for the extra momentum RMSE (MeshGraphNets
+            computes the Airfoil RMSE only around the wing): "auto" = the
+            default GIF zoom box around the airfoil, (xmin, xmax, ymin, ymax),
+            or None to disable. The whole-mesh momentum RMSE is always kept.
     """
 
     def __init__(
@@ -166,6 +224,7 @@ class AirfoilUnsteadyEvaluator(Evaluator):
         cmap_pred="viridis",
         cmap_err="YlOrRd",
         zoom=None,
+        roi="auto",
     ):
         self.out_dir = out_dir
         self.channel_names = list(channel_names)
@@ -181,6 +240,7 @@ class AirfoilUnsteadyEvaluator(Evaluator):
         self.cmap_pred = cmap_pred
         self.cmap_err = cmap_err
         self.zoom = zoom
+        self.roi = roi
         self.regression = RegressionEvaluator()
         self._metrics = None
 
@@ -191,7 +251,8 @@ class AirfoilUnsteadyEvaluator(Evaluator):
         Args:
             y_true / y_pred: (N, F, C, L) fields in physical units.
             mesh_pos: (L, 2) node coordinates (needed for GIFs).
-            node_type: (L,) node types, 2 = wall (needed for GIF auto-zoom).
+            node_type: (L,) node types, 2 = wall (needed for GIF auto-zoom
+                and roi="auto").
             cells: (M, 3) mesh triangles (needed for GIFs).
             conds: (N, 2) physical Mach/alpha per sample (needed for
                 selection labels and the Mach-AoA scatter).
@@ -236,17 +297,39 @@ class AirfoilUnsteadyEvaluator(Evaluator):
                 per_channel[name] = {k: float(v) for k, v in m.items()}
                 print_metrics_block(f"Channel {name}:", per_channel[name])
 
+            # momentum is only meaningful in physical units
+            momentum = {}
+            if space_name == "physical":
+                if {"u", "v", "rho"} <= set(self.channel_names):
+                    momentum["momentum_rmse"] = momentum_rollout_rmse(b, a, self.channel_names)
+                    print_metrics_block("Momentum rollout RMSE, whole mesh (rho*u, rho*v; initial frame excluded):",
+                                        momentum["momentum_rmse"])
+                    roi = self._roi_box(mesh_pos, node_type)
+                    if roi is not None:
+                        x, y = np.asarray(mesh_pos)[:, 0], np.asarray(mesh_pos)[:, 1]
+                        mask = (x >= roi[0]) & (x <= roi[1]) & (y >= roi[2]) & (y <= roi[3])
+                        momentum["momentum_rmse_roi"] = momentum_rollout_rmse(
+                            b, a, self.channel_names, node_mask=mask)
+                        momentum["roi"] = {"box_xmin_xmax_ymin_ymax": list(roi), "n_nodes": int(mask.sum())}
+                        print_metrics_block(
+                            f"Momentum rollout RMSE, ROI x [{roi[0]:.3f}, {roi[1]:.3f}] "
+                            f"y [{roi[2]:.3f}, {roi[3]:.3f}] ({int(mask.sum())} nodes):",
+                            momentum["momentum_rmse_roi"])
+                else:
+                    print("\nSkipping momentum RMSE (needs u, v and rho channels).")
+
+            metrics_json = {"space": space_name, "global": {k: float(v) for k, v in global_metrics.items()},
+                            "per_channel": per_channel, "channels": self.channel_names,
+                            "pred_shape": list(a.shape), **momentum}
             with open(os.path.join(self.out_dir, f"metrics{suffix}.json"), "w") as f:
-                json.dump({"space": space_name, "global": {k: float(v) for k, v in global_metrics.items()},
-                           "per_channel": per_channel, "channels": self.channel_names,
-                           "pred_shape": list(a.shape)}, f, indent=2)
+                json.dump(metrics_json, f, indent=2)
             print(f"\nSaved {self.out_dir}/metrics{suffix}.json")
 
             self._rmse_vs_frame(a, b, space_name, suffix, n_frames, n_channels)
             if conds is not None:
                 self._mach_aoa_scatter(a, b, space_name, suffix, conds, n, n_channels)
             all_metrics[space_name] = {"global": {k: float(v) for k, v in global_metrics.items()},
-                                       "per_channel": per_channel}
+                                       "per_channel": per_channel, **momentum}
 
         if mesh_pos is not None and cells is not None and conds is not None:
             self._gifs(y_true, y_pred, mesh_pos, node_type, cells, conds,
@@ -259,6 +342,18 @@ class AirfoilUnsteadyEvaluator(Evaluator):
         return all_metrics
 
     # -- sub-steps ------------------------------------------------------
+
+    def _roi_box(self, mesh_pos, node_type):
+        if self.roi is None or mesh_pos is None:
+            return None
+        if isinstance(self.roi, str):
+            if self.roi != "auto":
+                raise ValueError(f'roi must be "auto", a (xmin, xmax, ymin, ymax) tuple or None, got {self.roi!r}')
+            if node_type is None:
+                print('\nSkipping ROI momentum RMSE (roi="auto" needs node_type).')
+                return None
+            return airfoil_box(np.asarray(mesh_pos), np.asarray(node_type))
+        return tuple(float(v) for v in self.roi)
 
     def _rmse_vs_frame(self, a, b, space_name, suffix, n_frames, n_channels):
         print(f"\nComputing per-frame {space_name} RMSE ...")
@@ -363,14 +458,7 @@ class AirfoilUnsteadyEvaluator(Evaluator):
         if self.zoom is not None:
             xmin, xmax, ymin, ymax = self.zoom
         else:
-            # zoom around the airfoil wall nodes (node_type == 2) + margin
-            wall = mx[node_type == 2], my[node_type == 2]
-            chord = float(wall[0].max() - wall[0].min())
-            m = 0.65 * chord
-            xmin, xmax = float(wall[0].min() - m), float(wall[0].max() + m)
-            yc = float(0.5 * (wall[1].min() + wall[1].max()))
-            half_y = (xmax - xmin) / 2 / 1.5
-            ymin, ymax = yc - half_y, yc + half_y
+            xmin, xmax, ymin, ymax = airfoil_box(mesh_pos, node_type)
         print(f"  zoom x [{xmin:.3f}, {xmax:.3f}] y [{ymin:.3f}, {ymax:.3f}]")
 
         gt_s = gt[s]    # (F, C, L)
@@ -446,6 +534,12 @@ class AirfoilUnsteadyEvaluator(Evaluator):
             print_metrics_block(f"Global {space_name}:", space_metrics["global"])
             for name, m in space_metrics["per_channel"].items():
                 print_metrics_block(f"Channel {name} ({space_name}):", m)
+            if "momentum_rmse" in space_metrics:
+                print_metrics_block(f"Momentum rollout RMSE, whole mesh ({space_name}):",
+                                    space_metrics["momentum_rmse"])
+            if "momentum_rmse_roi" in space_metrics:
+                print_metrics_block(f"Momentum rollout RMSE, ROI ({space_name}):",
+                                    space_metrics["momentum_rmse_roi"])
 
 
 # --------------------------------------------------------------------------
