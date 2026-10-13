@@ -11,7 +11,14 @@ With ``residual=True`` the network predicts the normalized increment
 (u_{t+1} - u_t - delta_mean) / delta_std, so the output starts as the identity
 map (the final layer is zero-initialised). Conditions (Mach, alpha) enter
 through adaLN as in the DiT; there is no diffusion timestep.
+
+Unrolled training: if ``x`` holds a window of K frames (B, K, C, L), the model
+is rolled out from ``context`` on its own predictions and the loss is taken at
+every step, with gradients through the whole unroll. K follows
+``unroll_schedule``, driven by the Trainer through ``set_train_step``.
 """
+
+from functools import partial
 
 import numpy as np
 import torch
@@ -60,9 +67,14 @@ class ViT(DiT):
         num_frequencies: Fourier frequencies of the coordinate embedding.
         valid_length: number of real nodes; nodes beyond it are padding,
             excluded from the loss and kept at zero during rollouts.
+        unroll_schedule: curriculum for unrolled training, list of
+            (K, num_steps) stages run in order (the last K is kept after the
+            schedule ends). None = one step.
+        detach_every: truncate backprop through the unroll every M steps
+            (None = full backprop through all K steps).
     """
     def __init__(self, out_channels=None, residual=True, coords=None, num_frequencies=16,
-                 valid_length=None, **kwargs):
+                 valid_length=None, unroll_schedule=None, detach_every=None, **kwargs):
         kwargs.setdefault("class_dropout_prob", 0.0)  # deterministic regression, no CFG
         super().__init__(**kwargs)
         assert self.is_1d, "ViT only supports 1D (mesh) inputs"
@@ -106,6 +118,22 @@ class ViT(DiT):
         self.register_buffer("delta_mean", torch.zeros(1, self.out_channels, 1))
         self.register_buffer("delta_std", torch.ones(1, self.out_channels, 1))
 
+        self.unroll_schedule = list(unroll_schedule) if unroll_schedule is not None else [(1, 0)]
+        self.detach_every = detach_every
+        self.unroll_steps = self.unroll_schedule[0][0]
+
+    def set_train_step(self, step):
+        """Pick the unroll length K for optimizer step ``step`` from the schedule."""
+        k, end = self.unroll_schedule[-1][0], 0
+        for stage_k, stage_steps in self.unroll_schedule:
+            end += stage_steps
+            if step < end:
+                k = stage_k
+                break
+        if k != self.unroll_steps:
+            print(f"[unroll] step {step}: K {self.unroll_steps} -> {k}")
+            self.unroll_steps = k
+
     def set_delta_stats(self, mean, std):
         """mean / std: per-channel stats of u_{t+1} - u_t, any shape with C elements."""
         self.delta_mean.copy_(torch.as_tensor(mean, dtype=torch.float32).reshape(1, -1, 1))
@@ -118,13 +146,15 @@ class ViT(DiT):
         emb = emb.reshape(-1, self.patch_size, emb.shape[-1]).mean(dim=1)  # (S, D)
         return emb.unsqueeze(0)
 
-    def predict(self, context, classes, **kwargs):
+    def predict(self, context, classes, checkpoint_blocks=None, **kwargs):
         """Raw network output for the current state context (B, C, L)."""
+        if checkpoint_blocks is None:
+            checkpoint_blocks = self.gradient_checkpointing
         x = self.x_embedder(context) + self._pos_embed()  # (B, S, D)
         force_drop_ids = kwargs.get("force_drop_ids", None)
         c = self.y_embedder(classes, self.training, force_drop_ids)  # (B, D)
         for block in self.blocks:
-            if self.gradient_checkpointing:
+            if checkpoint_blocks:
                 x = checkpoint(block, x, c, self.feat_rope, use_reentrant=False)
             else:
                 x = block(x, c, self.feat_rope)  # (B, S, D)
@@ -138,13 +168,44 @@ class ViT(DiT):
             out = context[:, :self.out_channels].float() + out * self.delta_std + self.delta_mean
         return out * self.node_mask
 
+    def unrolled_loss(self, x, classes, context, **kwargs):
+        """
+        Roll out K steps from context on the model's own predictions and
+        average the per-step losses. x: (B, K_max, C, L) GT frames t+1..t+K_max.
+
+        The step-k error is measured in units of the one-step increment std
+        (residual mode), so K=1 gives exactly the one-step loss. With gradient
+        checkpointing, whole AR steps are checkpointed (only the states are
+        kept), so memory stays flat in K.
+        """
+        n_steps = min(self.unroll_steps, x.shape[1])
+        scale = self.delta_std if self.residual else 1.0
+        norm = self.node_mask.sum() * x.shape[0] * self.out_channels
+        step_fn = self.step
+        if self.gradient_checkpointing and torch.is_grad_enabled():
+            step_fn = partial(checkpoint, partial(self.step, checkpoint_blocks=False, **kwargs),
+                              use_reentrant=False)
+            kwargs = {}
+        state = context.float()
+        loss = 0.0
+        for k in range(n_steps):
+            if self.detach_every and k > 0 and k % self.detach_every == 0:
+                state = state.detach()
+            state = step_fn(state, classes, **kwargs)
+            err = ((state - x[:, k].float()) / scale) ** 2 * self.node_mask
+            loss = loss + err.sum() / norm
+        return loss / n_steps
+
     def forward(self, x, classes=None, context=None, return_loss=True, **kwargs):
         """
-        x: (B, C, L) next state u_{t+1} (target)
+        x: (B, C, L) next state u_{t+1} (target), or (B, K, C, L) frames
+            t+1..t+K for unrolled training
         context: (B, C, L) current state u_t
         """
         if not return_loss:
             return self.step(context, classes, **kwargs)
+        if x.ndim == context.ndim + 1:
+            return self.unrolled_loss(x, classes, context, **kwargs)
         out = self.predict(context, classes, **kwargs).float()
         target = x.float()
         if self.residual:

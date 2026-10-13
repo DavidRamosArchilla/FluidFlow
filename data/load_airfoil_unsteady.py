@@ -265,13 +265,51 @@ def make_pair_dataset(dataset, frame_stride=1, max_pairs=None):
     return AutoregressivePairDataset(fields, conds, frame_stride=frame_stride, max_pairs=max_pairs)
 
 
-def make_rollout_dataset(dataset):
+class AutoregressiveWindowDataset(Dataset):
+    """Unrolled-training windows (u_{t+1..t+K}, conds, u_t) built lazily from (N, F, C, L) fields.
+
+    Same ``(target, conds, context)`` layout as :class:`AutoregressivePairDataset`,
+    but the target holds the next ``window`` frames, shape (K, C, L), so the
+    model can be rolled out K steps from u_t and compared at every step.
+    Starting frames are 0 .. F-1-K, so every window is complete.
+    """
+    def __init__(self, fields, conds, window, frame_stride=1, max_windows=None):
+        assert fields.ndim == 4 and fields.shape[1] > window >= 1, \
+            f"fields must be (N, F, C, L) with F > window, got {tuple(fields.shape)} and window {window}"
+        assert fields.shape[0] == conds.shape[0]
+        self.fields = fields
+        self.conds = conds
+        self.window = window
+        starts = torch.arange(0, fields.shape[1] - window, frame_stride)
+        sims = torch.arange(fields.shape[0])
+        # (P, 2) list of (sim, t)
+        self.index = torch.stack(torch.meshgrid(sims, starts, indexing="ij"), dim=-1).reshape(-1, 2)
+        if max_windows is not None and len(self.index) > max_windows:
+            keep = torch.linspace(0, len(self.index) - 1, max_windows).long()
+            self.index = self.index[keep]
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, i):
+        n, t = self.index[i].tolist()
+        return self.fields[n, t + 1:t + 1 + self.window], self.conds[n], self.fields[n, t]
+
+
+def make_window_dataset(dataset, window, frame_stride=1, max_windows=None):
+    """(fields, conds) TensorDataset -> :class:`AutoregressiveWindowDataset`."""
+    fields, conds = dataset.tensors[0], dataset.tensors[1]
+    return AutoregressiveWindowDataset(fields, conds, window, frame_stride=frame_stride, max_windows=max_windows)
+
+
+def make_rollout_dataset(dataset, max_samples=None):
     """(fields, conds) TensorDataset -> (fields, conds, fields[:, 0]).
 
     Used to evaluate full autoregressive rollouts: the model receives the
     initial frame as ``context`` and the whole trajectory is the target.
+    ``max_samples`` keeps only the first trajectories (e.g. for validation).
     """
-    fields, conds = dataset.tensors[0], dataset.tensors[1]
+    fields, conds = dataset.tensors[0][:max_samples], dataset.tensors[1][:max_samples]
     return TensorDataset(fields, conds, fields[:, 0].contiguous())
 
 

@@ -1,6 +1,7 @@
 # project
 results/
 data/airfoil_unsteady/airfoil
+data/driveaernet
 run_job.sh
 logs/*
 

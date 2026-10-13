@@ -52,7 +52,7 @@ train_batch_size = 16
 gradient_accumulate_every = 1
 train_lr = 1e-4
 train_steps = 70000
-results_folder = 'results/airfoil_unsteady/vae_8_channels'
+results_folder = 'results/airfoil_unsteady/vae_32_channels'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -123,7 +123,7 @@ trainer = TrainerVAE(
 )
 
 # trainer.train()
-trainer.load(os.path.join(results_folder, "vae_best.pt"))
+# trainer.load(os.path.join(results_folder, "vae_best.pt"))
 shutil.copy(__file__, os.path.join(results_folder, os.path.basename(__file__)))
 os.makedirs(results_folder, exist_ok=True)
 # norm stats in (1, C, 1, 1) VAE layout (loader stats are (1, 1, C, 1))
@@ -211,12 +211,12 @@ def save_latents(vae, dataset_train, dataset_test, save_dir,
 
 if trainer.accelerator.is_main_process:
     vae = trainer._unwrapped_model()
-    recs = reconstruct_test(vae, test_dataset, batch_size=1, device=trainer.device)
-    # if os.path.exists(os.path.join(results_folder, "reconstructions.pt")):
-    #     recs = torch.load(os.path.join(results_folder, "reconstructions.pt"))
-    # else:
-    #     recs = reconstruct_test(vae, test_dataset, batch_size=1, device=trainer.device)
-    #     torch.save(recs, os.path.join(results_folder, "reconstructions.pt"))
+    # recs = reconstruct_test(vae, test_dataset, batch_size=1, device=trainer.device)
+    if os.path.exists(os.path.join(results_folder, "reconstructions.pt")):
+        recs = torch.load(os.path.join(results_folder, "reconstructions.pt"))
+    else:
+        recs = reconstruct_test(vae, test_dataset, batch_size=1, device=trainer.device)
+        torch.save(recs, os.path.join(results_folder, "reconstructions.pt"))
 
     # ---- final evaluation, same as train_airfoil_unsteady.py (physical units) ----
     # back to (N, F, C, L) loader layout, trim mesh padding, denormalize

@@ -90,6 +90,7 @@ class Trainer:
         muon_weight_decay=1e-3,
         muon_adjust_lr_fn=None,
         gradient_checkpointing=False,
+        eval_sampling_kwargs=None,
     ):
         super().__init__()
 
@@ -121,6 +122,8 @@ class Trainer:
         self.max_grad_norm = max_grad_norm
 
         self.train_num_steps = train_num_steps
+        # extra kwargs for the periodic validation (e.g. num_steps for AR rollouts)
+        self.eval_sampling_kwargs = eval_sampling_kwargs or {}
 
         # dataset and dataloader
         dl = DataLoader(dataset, batch_size=train_batch_size, shuffle=True, pin_memory=True, num_workers=4, persistent_workers=True)
@@ -330,6 +333,10 @@ class Trainer:
                         print(f"[Profiler] Started at step {self.step}")
 
                 self.model.train()
+                # models with a step-dependent training schedule (e.g. AR unroll curriculum)
+                unwrapped_model = accelerator.unwrap_model(self.model)
+                if hasattr(unwrapped_model, "set_train_step"):
+                    unwrapped_model.set_train_step(self.step)
                 # for _ in range(self.gradient_accumulate_every):
                 data = next(self.dl)#.to(device)
                 with accelerator.accumulate(self.model):
@@ -386,7 +393,8 @@ class Trainer:
                         model_state_dict = accelerator.get_state_dict(self.model)
                         milestone = self.step // self.save_and_sample_every
                         if self.dl_test is not None:
-                            samples, sequences = self.eval_model(self.dl_test.dataset, batch_size=self.batch_size, use_autocast=True)
+                            samples, sequences = self.eval_model(self.dl_test.dataset, batch_size=self.batch_size, use_autocast=True,
+                                                                 **self.eval_sampling_kwargs)
                             if accelerator.is_main_process:
                                 mse = ((samples - sequences) ** 2).mean()
                                 test_losses = mse.cpu().item()
