@@ -137,12 +137,12 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, bias=True, use_swiglu=False, attn_type="vanilla", qk_norm=False, num_experts=None, num_experts_per_tok=None, **attn_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, bias=True, use_swiglu=False, attn_type="vanilla", qk_norm=False, num_experts=None, num_experts_per_tok=None, causal=False, **attn_kwargs):
         super().__init__()
         self.norm1 = nn.RMSNorm(hidden_size, elementwise_affine=bias)
         self.norm2 = nn.RMSNorm(hidden_size, elementwise_affine=bias)
         if attn_type == "vanilla":
-            self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
+            self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, causal=causal, **attn_kwargs)
         elif attn_type == "linear":
             self.attn = LinearAttention(hidden_size, num_heads=num_heads, qkv_bias=bias, proj_bias=bias, qk_norm=qk_norm, **attn_kwargs)
         elif attn_type == "physics":
@@ -322,8 +322,8 @@ class TemporalDiTBlock(DiTBlock):
     Accepts (B, F*S, D) and transposes to make frames the sequence axis:
         (B, F*S, D) -> (B*S, F, D) -> attention -> (B, F*S, D)
     """
-    def __init__(self, hidden_size, num_heads, *args, num_spatial_patches=64, **kwargs):
-        super().__init__(hidden_size, num_heads, *args, **kwargs)
+    def __init__(self, hidden_size, num_heads, *args, num_spatial_patches=64, causal_time=False, **kwargs):
+        super().__init__(hidden_size, num_heads, *args, causal=causal_time, **kwargs)
         self.num_spatial_patches = num_spatial_patches
 
     def forward(self, x, c, feat_rope=None):  # feat_rope intentionally ignored
@@ -385,6 +385,7 @@ class VideoDiT(nn.Module):
         num_experts=None,
         num_experts_per_tok=None,
         factorize=True,
+        causal_time=False,
         **kwargs
     ):
         super().__init__()
@@ -400,6 +401,7 @@ class VideoDiT(nn.Module):
         self.num_frames = num_frames
         self.is_video = True
         self.factorize = factorize
+        self.causal_time = causal_time
 
         # -- Patch embedder & final layer --
         self.input_size = input_size
@@ -459,6 +461,7 @@ class VideoDiT(nn.Module):
                         mlp_ratio=mlp_ratio, bias=use_bias,
                         use_swiglu=use_swiglu,
                         attn_type="vanilla",  # temporal always uses vanilla attn
+                        causal_time=self.causal_time,
                         qk_norm=qk_norm)
                 self.blocks.append(blk)
         else:

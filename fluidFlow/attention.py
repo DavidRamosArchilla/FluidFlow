@@ -28,6 +28,7 @@ class Attention(nn.Module):
         proj_drop: float = 0.,
         proj_bias: bool = True,
         fused_attn: bool = True,
+        causal: bool = False,
         **kwargs
     ) -> None:
         super().__init__()
@@ -37,6 +38,7 @@ class Attention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
         self.fused_attn = fused_attn
+        self.causal = causal
             
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.qk_norm = qk_norm
@@ -75,14 +77,14 @@ class Attention(nn.Module):
                 x, *_ = flash_attn_func(
                     q_fa, k_fa, v_fa,
                     # dropout_p=self.attn_drop.p if self.training else 0.,
-                    causal=False,
+                    causal=self.causal,
                 )
             else:
                 # padded batch: each sample attends to its first `length` keys only
                 x, *_ = flash_attn_varlen_func(
                     q_fa, k_fa, v_fa,
                     seqused_k=mask.sum(dim=1, dtype=torch.int32),
-                    causal=False,
+                    causal=self.causal,
                 )
             # FA4 returns (B, N, heads, head_dim) → back to (B, heads, N, head_dim)
             x = x.permute(0, 2, 1, 3)
@@ -91,12 +93,17 @@ class Attention(nn.Module):
                 q, k, v,
                 attn_mask=None if mask is None else mask[:, None, None, :],
                 dropout_p=self.attn_drop.p if self.training else 0.,
+                is_causal=self.causal,
             )
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
             if mask is not None:
                 attn = attn.masked_fill(~mask[:, None, None, :], float("-inf"))
+            if self.causal:
+                # causal mask: block attention to future tokens (upper triangular)
+                causal_mask = torch.triu(torch.ones(N, N, device=x.device, dtype=torch.bool), diagonal=1)
+                attn = attn.masked_fill(causal_mask, float("-inf"))
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v

@@ -54,7 +54,7 @@ muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999         # EMA horizon ~10k steps (0.995 -> ~2k steps)
 use_lognorm = True        # logit-normal timestep sampling instead of uniform
-results_folder = 'results/airfoil_unsteady/d8_p1_latent_16_channels'
+results_folder = 'results/airfoil_unsteady/d8_p1_latent_32_channels_causal'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -181,6 +181,7 @@ model = VideoDiT(
     slice_num=128,
     mlp_ratio=2.5,
     factorize=factorize,
+    causal_time=True,  # True if the model should be causal in time
 )
 print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 
