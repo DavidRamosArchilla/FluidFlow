@@ -27,6 +27,27 @@ def cycle(dl):
 def exists(x):
     return x is not None
 
+def split_batch(data):
+    """Batch -> (target, model kwargs).
+
+    Tuple batches are (target, classes[, context]). Dict batches (e.g. from a
+    collate_fn) hold the target under "x" and every other key (context, mask,
+    ...) is passed to the model as a keyword argument.
+    """
+    if isinstance(data, dict):
+        model_kwargs = dict(data)
+        return model_kwargs.pop("x"), model_kwargs
+    model_kwargs = {"classes": data[1]}
+    if len(data) > 2:
+        # optional third tensor: model input/context (e.g. u_t for autoregressive models)
+        model_kwargs["context"] = data[2]
+    return data[0], model_kwargs
+
+def cat_padded(tensors):
+    """Concatenate along dim 0, zero-padding the last dim to the longest tensor."""
+    length = max(t.shape[-1] for t in tensors)
+    return torch.cat([torch.nn.functional.pad(t, (0, length - t.shape[-1])) for t in tensors], dim=0)
+
 def print_profiler_summary(prof):
     averages = prof.key_averages()
     cuda_attr = 'self_device_time_total'
@@ -91,6 +112,8 @@ class Trainer:
         muon_adjust_lr_fn=None,
         gradient_checkpointing=False,
         eval_sampling_kwargs=None,
+        dataloader_collate_fn=None,
+        save_eval_samples=True,
     ):
         super().__init__()
 
@@ -124,11 +147,17 @@ class Trainer:
         self.train_num_steps = train_num_steps
         # extra kwargs for the periodic validation (e.g. num_steps for AR rollouts)
         self.eval_sampling_kwargs = eval_sampling_kwargs or {}
+        # save the validation predictions at every milestone (sample-{milestone}.pt)
+        self.save_eval_samples = save_eval_samples
 
         # dataset and dataloader
-        dl = DataLoader(dataset, batch_size=train_batch_size, shuffle=True, pin_memory=True, num_workers=4, persistent_workers=True)
+        # collate_fn: e.g. to pad variable-size samples; may return a dict batch (see split_batch)
+        self.collate_fn = dataloader_collate_fn
+        dl = DataLoader(dataset, batch_size=train_batch_size, shuffle=True, pin_memory=True, num_workers=4, persistent_workers=True,
+                        collate_fn=self.collate_fn)
         if dataset_test is not None:
-            self.dl_test = DataLoader(dataset_test, batch_size = train_batch_size, shuffle=False, pin_memory=True, num_workers=4)
+            self.dl_test = DataLoader(dataset_test, batch_size = train_batch_size, shuffle=False, pin_memory=True, num_workers=4,
+                                      collate_fn=self.collate_fn)
         else:
             self.dl_test = None
 
@@ -180,7 +209,7 @@ class Trainer:
         self.ema.to(self.device, dtype=torch.float32) # 
 
         self.results_folder = Path(results_folder)
-        self.results_folder.mkdir(exist_ok = True)
+        self.results_folder.mkdir(parents = True, exist_ok = True)
 
         # step counter state
         self.step = 0
@@ -340,11 +369,11 @@ class Trainer:
                 # for _ in range(self.gradient_accumulate_every):
                 data = next(self.dl)#.to(device)
                 with accelerator.accumulate(self.model):
-                    sequence, classes = data[0].to(device), data[1].to(device)
-                    # optional third tensor: model input/context (e.g. u_t for autoregressive models)
-                    model_kwargs = {"context": data[2].to(device)} if len(data) > 2 else {}
+                    sequence, model_kwargs = split_batch(data)
+                    sequence = sequence.to(device)
+                    model_kwargs = {k: v.to(device) for k, v in model_kwargs.items()}
                     with self.accelerator.autocast():
-                        loss = self.model(sequence, classes=classes, **model_kwargs)
+                        loss = self.model(sequence, **model_kwargs)
 
                     self.accelerator.backward(loss)
                     accum_loss += loss.detach().float()
@@ -393,13 +422,19 @@ class Trainer:
                         model_state_dict = accelerator.get_state_dict(self.model)
                         milestone = self.step // self.save_and_sample_every
                         if self.dl_test is not None:
-                            samples, sequences = self.eval_model(self.dl_test.dataset, batch_size=self.batch_size, use_autocast=True,
-                                                                 **self.eval_sampling_kwargs)
+                            samples, sequences, mask = self.eval_model(self.dl_test.dataset, batch_size=self.batch_size, use_autocast=True,
+                                                                       return_mask=True, **self.eval_sampling_kwargs)
                             if accelerator.is_main_process:
-                                mse = ((samples - sequences) ** 2).mean()
+                                sq_err = (samples - sequences) ** 2
+                                if mask is not None:
+                                    # (N, L) mask over the last dim of (N, C, L) predictions: MSE over the real points only
+                                    mse = (sq_err * mask.unsqueeze(1)).sum() / (mask.sum() * sq_err.shape[1])
+                                else:
+                                    mse = sq_err.mean()
                                 test_losses = mse.cpu().item()
                                 self.test_loss_history.append(test_losses)
-                                torch.save(samples, str(self.results_folder / f'sample-{milestone}.pt'))
+                                if self.save_eval_samples:
+                                    torch.save(samples, str(self.results_folder / f'sample-{milestone}.pt'))
 
                         if accelerator.is_main_process:
                             self.save(milestone, model_state_dict)
@@ -415,9 +450,18 @@ class Trainer:
         accelerator.print('training complete')
         # profiler.__exit__(None, None, None)
     
-    def eval_model(self, dataset_test, batch_size=32, use_autocast=False, **sampling_kwargs):
+    def eval_model(self, dataset_test, batch_size=32, use_autocast=False, return_mask=False, collate_fn=None, **sampling_kwargs):
+        """Predict on dataset_test with the EMA model.
+
+        Returns (predictions, targets) on the main process, or (predictions,
+        targets, mask) with return_mask=True, where mask is the (N, L) point mask
+        of dict batches with a "mask" key (else None). Variable-length batches
+        are zero-padded to the longest sample. collate_fn defaults to the
+        training one.
+        """
         # Prepare models
-        dl_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4)
+        collate_fn = self.collate_fn if collate_fn is None else collate_fn
+        dl_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4, collate_fn=collate_fn)
         
         # Accelerate handles moving the model to the correct device even on 1 GPU
         model, test_dataloader = self.accelerator.prepare(self.ema.ema_model, dl_test)
@@ -435,28 +479,39 @@ class Trainer:
         
         all_preds = []
         all_seqs = []
+        all_masks = []
         for data in tqdm(test_dataloader, disable=not self.accelerator.is_main_process):
-            sequence, classes = data[0], data[1]
-            model_kwargs = {"context": data[2]} if len(data) > 2 else {}
+            sequence, model_kwargs = split_batch(data)
+            mask = model_kwargs.get("mask")
             with torch.inference_mode():    
                 with (self.accelerator.autocast() if use_autocast else nullcontext()):
-                    pred = model.sample(classes=classes, **model_kwargs, **sampling_kwargs)
+                    pred = model.sample(**model_kwargs, **sampling_kwargs)
 
-                # gather_for_metrics works automatically for both single and multi-GPU
-                gathered_pred, sequence = self.accelerator.gather_for_metrics((pred, sequence))
+                if mask is not None:
+                    # variable-length samples: pad to the longest batch over the processes before gathering
+                    pred, sequence, mask = (self.accelerator.pad_across_processes(t, dim=-1)
+                                            for t in (pred, sequence, mask.to(torch.uint8)))
+                    pred, sequence, mask = self.accelerator.gather_for_metrics((pred, sequence, mask))
+                else:
+                    # gather_for_metrics works automatically for both single and multi-GPU
+                    pred, sequence = self.accelerator.gather_for_metrics((pred, sequence))
         
             if self.accelerator.is_main_process:
-                all_preds.append(gathered_pred.cpu())
+                all_preds.append(pred.cpu())
                 all_seqs.append(sequence.cpu())
+                if mask is not None:
+                    all_masks.append(mask.bool().cpu())
                 
             del pred
-            del gathered_pred
-            del classes
             del sequence
+            del model_kwargs
             
-        if self.accelerator.is_main_process:
-            return torch.cat(all_preds, dim=0), torch.cat(all_seqs, dim=0)
-        return None, None
+        if not self.accelerator.is_main_process:
+            return (None, None, None) if return_mask else (None, None)
+        preds, seqs = cat_padded(all_preds), cat_padded(all_seqs)
+        if return_mask:
+            return preds, seqs, cat_padded(all_masks) if all_masks else None
+        return preds, seqs
     
     def save_loss_plot(self):
         plt.figure()

@@ -73,8 +73,8 @@ class RegressionEvaluator(Evaluator):
 
     def mean_relative_error(
         self,
-        y_pred: np.ndarray,
         y_true: np.ndarray,
+        y_pred: np.ndarray,
     ) -> float:
         """
         Compute the mean relative error (MRE) between the true values and the predicted values,
@@ -98,8 +98,8 @@ class RegressionEvaluator(Evaluator):
 
     def ae_q(
         self,
-        y_pred: np.ndarray,
         y_true: np.ndarray,
+        y_pred: np.ndarray,
         quantile: int,
     ) -> float:
         """
@@ -119,8 +119,8 @@ class RegressionEvaluator(Evaluator):
 
     def l2_error(
         self,
-        y_pred: np.ndarray,
         y_true: np.ndarray,
+        y_pred: np.ndarray,
     ) -> float:
         """
         Calculate the L2 error between the true and predicted values.

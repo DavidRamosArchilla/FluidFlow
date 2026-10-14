@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from timm.layers import trunc_normal_
 try: 
-    from flash_attn.cute import flash_attn_func
+    from flash_attn.cute import flash_attn_func, flash_attn_varlen_func
     is_flash_attn_available = True
     print("Flash attention 4 enabled ⚡")
 except:
@@ -46,7 +46,9 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
         
-    def forward(self, x: torch.Tensor, rope=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, rope=None, mask=None) -> torch.Tensor:
+        """mask: optional (B, N) bool key padding mask, True on the tokens to attend to.
+        With FA4 the padding must be at the end of each sample (mask = arange(N) < length)."""
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) # 3, B, heads, N, head_dim
         q, k, v = qkv.unbind(0)
@@ -69,21 +71,32 @@ class Attention(nn.Module):
             q_fa = q.permute(0, 2, 1, 3)  # (B, N, heads, head_dim)
             k_fa = k.permute(0, 2, 1, 3)
             v_fa = v.permute(0, 2, 1, 3)
-            x, *_ = flash_attn_func(
-                q_fa, k_fa, v_fa,
-                # dropout_p=self.attn_drop.p if self.training else 0.,
-                causal=False,
-            )
+            if mask is None:
+                x, *_ = flash_attn_func(
+                    q_fa, k_fa, v_fa,
+                    # dropout_p=self.attn_drop.p if self.training else 0.,
+                    causal=False,
+                )
+            else:
+                # padded batch: each sample attends to its first `length` keys only
+                x, *_ = flash_attn_varlen_func(
+                    q_fa, k_fa, v_fa,
+                    seqused_k=mask.sum(dim=1, dtype=torch.int32),
+                    causal=False,
+                )
             # FA4 returns (B, N, heads, head_dim) → back to (B, heads, N, head_dim)
             x = x.permute(0, 2, 1, 3)
         elif self.fused_attn:
             x = F.scaled_dot_product_attention(
                 q, k, v,
+                attn_mask=None if mask is None else mask[:, None, None, :],
                 dropout_p=self.attn_drop.p if self.training else 0.,
             )
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
+            if mask is not None:
+                attn = attn.masked_fill(~mask[:, None, None, :], float("-inf"))
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v

@@ -68,7 +68,7 @@ unroll_schedule = [(2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 10000)]
 # init_checkpoint = None
 # unroll_schedule = [(1, 200000), (2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 10000)]
 detach_every = None       # truncate backprop every M unroll steps (None = full backprop)
-gradient_checkpointing = False  # checkpoint whole AR steps: memory ~flat in K, ~1.3x compute
+gradient_checkpointing = True  # checkpoint whole AR steps: memory ~flat in K, ~1.3x compute
 # ---------- training config ----------
 train_batch_size = 16
 gradient_accumulate_every = 1
@@ -235,6 +235,7 @@ trainer = Trainer(
     muon_weight_decay=muon_weight_decay,
     split_batches=True,
     gradient_checkpointing=gradient_checkpointing,
+    compile_model=True
 )
 
 shutil.copy(__file__, os.path.join(results_folder, os.path.basename(__file__)))
