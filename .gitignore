@@ -2,7 +2,8 @@
 results/
 data/airfoil_unsteady/airfoil
 data/driveaernet
-run_job.sh
+run_job*.sh
+launcher.sh
 logs/*
 
 # Byte-compiled / optimized / DLL files

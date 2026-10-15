@@ -34,9 +34,9 @@ np.random.seed(42)
 
 # run this script from the repo root so the relative paths below resolve
 # ---------- data config ----------
-cache_path = "data/driveaernet/drivaernet_cache.pt"
-vtk_dir = "/home/d.ramos/DrivAerNet/PressureVTK"  # needed to build the cache and to export VTKs
-split_dir = "/home/d.ramos/DrivAerNet/splits"      # needed to build the cache
+cache_path = "./data/driveaernet/drivaernet_cache.pt"
+vtk_dir = None #"/gpfs/scratch/upm106/david/denoising-diffusion-pytorch-fluid-mechanics-main/data/driveaernet"  # needed to build the cache and to export VTKs
+split_dir = "/gpfs/scratch/upm106/david/denoising-diffusion-pytorch-fluid-mechanics-main/data/driveaernet/splits"      # needed to build the cache
 field_names = ("p",)
 max_valid_samples = 200   # validation cars evaluated at every milestone (None = all 1148)
 # ---------- model config ----------
@@ -109,6 +109,7 @@ trainer = Trainer(
     split_batches=True,
     dataloader_collate_fn=collate_fn,
     save_eval_samples=False,  # validation predictions are ~0.5 GB per milestone
+    compile_model=True
 )
 
 if trainer.accelerator.is_main_process:

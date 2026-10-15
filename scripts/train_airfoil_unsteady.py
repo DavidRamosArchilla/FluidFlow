@@ -9,6 +9,7 @@ from fluidFlow.evaluation import AirfoilUnsteadyEvaluator, AirfoilUnsteadyFFTEva
 import json
 import os
 import shutil
+import gc
 
 import numpy as np
 import torch
@@ -122,47 +123,47 @@ model_shape = fields_shape  # (N, F, C, L) layout expected by VideoDiT
 keep_frames = None  # VAE mode: frames kept after the 1+8k crop (None = all)
 vae = None
 if use_vae:
-    vae = AutoencoderKLLTX(AutoencoderKLLTXConfig(
-        in_channels=channels,
-        base_channels=vae_base_channels,
-        latent_channels=vae_latent_channels,
-        patch_size=vae_patch_size,
-    ))
-
-    # same frame crop the VAE was trained with (F = 1 + 8*k)
     n_full_frames = fields_shape[1]
     keep_frames = n_full_frames if (n_full_frames - 1) % 8 == 0 else n_full_frames - (n_full_frames - 1) % 8
-    if keep_frames != n_full_frames:
-        print(f"Cropping frames {n_full_frames} -> {keep_frames} to match the VAE latents")
 
-    # No TrainerVAE here: a second accelerator breaks the diffusion Trainer.
-    # The checkpoint was saved from a compiled model (TrainerVAE with
-    # compile_model=True), so compile first — its keys carry the "_orig_mod." prefix.
+    # 1) keep the tiny conds, drop train/valid fields BEFORE loading latents
+    conds_train = dataset_train.tensors[1].clone()
+    conds_valid = dataset_valid.tensors[1].clone()
+    conds_test = dataset_test.tensors[1].clone()
+    del dataset_train, dataset_valid
+
+    # 2) park the test GT on disk until evaluation (crop it first so it's smaller)
+    gt_path = os.path.join(results_folder, "gt_test_fields.pt")
+    os.makedirs(results_folder, exist_ok=True)
+    torch.save(dataset_test.tensors[0][:, :keep_frames].clone(), gt_path)
+    del dataset_test
+    gc.collect()
+
+    # 3) VAE: drop the checkpoint dict once the weights are loaded
+    vae = AutoencoderKLLTX(AutoencoderKLLTXConfig(
+        in_channels=channels, base_channels=vae_base_channels,
+        latent_channels=vae_latent_channels, patch_size=vae_patch_size,
+    ))
     vae = torch.compile(vae)
     ckpt = torch.load(os.path.join(vae_dir, vae_checkpoint), map_location="cpu")
     vae.load_state_dict(ckpt["model"])
+    del ckpt
+    gc.collect()
     vae.eval()
-    print(f"Loaded VAE weights from {os.path.join(vae_dir, vae_checkpoint)}")
 
-    # precomputed latents are (N, C_lat, F', L'): transpose vs the (N, F, C, L) fields
-    z_train = torch.from_numpy(np.load(os.path.join(vae_dir, "latents_train.npy"))).float()
-    z_valid = torch.from_numpy(np.load(os.path.join(vae_dir, "latents_valid.npy"))).float()
-    z_test = torch.from_numpy(np.load(os.path.join(vae_dir, "latents_test.npy"))).float()
-    print("Precomputed latents:", tuple(z_train.shape), tuple(z_valid.shape), tuple(z_test.shape), "(N, C_lat, F', L')") 
+    # 4) load one split at a time; no module-level z_* left behind
+    def _load_latents(split, conds):
+        z = torch.from_numpy(np.load(os.path.join(vae_dir, f"latents_{split}.npy")))
+        assert z.shape[0] == conds.shape[0], f"{split}: {z.shape[0]} latents vs {conds.shape[0]} conds"
+        z = z.permute(0, 2, 1, 3).float().contiguous()  # the original is freed when z is rebound
+        return TensorDataset(z, conds)
 
-    def _to_dit_latents(z, conds, name):
-        assert z.shape[0] == conds.shape[0], \
-            f"{name}: {z.shape[0]} latents vs {conds.shape[0]} conditions — " \
-            "the precomputed latents must come from the same splits/caps"
-        return TensorDataset(z.permute(0, 2, 1, 3).contiguous(), conds)  # (N, F', C_lat, L')
-
-    dataset_train = _to_dit_latents(z_train, dataset_train.tensors[1], "train")
-    dataset_valid = _to_dit_latents(z_valid, dataset_valid.tensors[1], "valid")
-    dataset_test = _to_dit_latents(z_test, fields_test_dataset.tensors[1], "test")
+    dataset_train = _load_latents("train", conds_train); gc.collect()
+    dataset_valid = _load_latents("valid", conds_valid); gc.collect()
+    dataset_test = _load_latents("test", conds_test); gc.collect()
 
     dit_patch_size = latent_patch_size
     model_shape = dataset_train.tensors[0].shape
-    print("Train latent shape (DiT layout):", tuple(model_shape), "(N, F', C_lat, L')")
 
 model = VideoDiT(
     depth=depth,
@@ -198,10 +199,10 @@ trainer = Trainer(
     flow_matching,
     dataset=dataset_train,
     dataset_test=dataset_valid,  # validation only during training
-    train_batch_size=1,
+    train_batch_size=16,
     train_lr=train_lr,
     train_num_steps=train_steps,
-    gradient_accumulate_every=16,  # gradient accumulation steps
+    gradient_accumulate_every=1,  # gradient accumulation steps
     ema_decay=ema_decay,  # exponential moving average decay
     amp=True,  # turn on mixed precision
     mixed_precision_type='bf16',
