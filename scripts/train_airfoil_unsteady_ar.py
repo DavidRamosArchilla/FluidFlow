@@ -47,22 +47,22 @@ valid_frame_stride = 20   # validation pairs: every k-th starting frame (one-ste
 # ---------- model config ----------
 patch_size = 1
 depth = 10
-hidden_size = 768
-num_heads = 12            # head_dim 64 (FA4 needs 32/64/128)
-mlp_ratio = 3
+hidden_size = 1024
+num_heads = 16            # head_dim 64 (FA4 needs 32/64/128)
+mlp_ratio = 4
 residual = True           # predict normalized u_{t+1} - u_t instead of u_{t+1}
-use_coord_pe = True       # Fourier embedding of the mesh coordinates instead of sin-cos node index
+use_coord_pe = False       # Fourier embedding of the mesh coordinates instead of sin-cos node index
 num_frequencies = 16
 # ---------- training config ----------
 train_batch_size = 16
 gradient_accumulate_every = 1
 train_lr = 2e-4           # AdamW lr (1D params: biases, norms, patch embedder)
-train_steps = 200000      # optimizer steps (each = gradient_accumulate_every micro-batches)
+train_steps = 300000      # optimizer steps (each = gradient_accumulate_every micro-batches)
 muon_lr = 2e-4
 muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999
-results_folder = 'results/airfoil_unsteady/vit_ar_d10_h768'
+results_folder = 'results/airfoil_unsteady/vit_ar_d10_h1024_no_coord_pe'
 # ---------- evaluation config ----------
 eval_batch_size = 8
 eval_space = "physical"  # "physical", "normalized" or "both"

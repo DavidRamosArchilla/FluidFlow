@@ -50,7 +50,7 @@ class Attention(nn.Module):
         
     def forward(self, x: torch.Tensor, rope=None, mask=None) -> torch.Tensor:
         """mask: optional (B, N) bool key padding mask, True on the tokens to attend to.
-        With FA4 the padding must be at the end of each sample (mask = arange(N) < length)."""
+        With FA4 the masked-out tokens are dropped and get a zero output."""
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) # 3, B, heads, N, head_dim
         q, k, v = qkv.unbind(0)
@@ -80,12 +80,23 @@ class Attention(nn.Module):
                     causal=self.causal,
                 )
             else:
-                # padded batch: each sample attends to its first `length` keys only
-                x, *_ = flash_attn_varlen_func(
+                # padded batch: pack the real tokens of all samples into one sequence and
+                # run varlen attention on it (seqused_k gives wrong gradients in FA4 4.0.0b33)
+                lengths = mask.sum(dim=1, dtype=torch.int32)
+                cu_seqlens = F.pad(lengths.cumsum(0, dtype=torch.int32), (1, 0))
+                max_seqlen = int(lengths.max())
+                idx = mask.flatten().nonzero(as_tuple=True)[0]  # (total,)
+                q_fa, k_fa, v_fa = (t.reshape(B * N, self.num_heads, self.head_dim).index_select(0, idx)
+                                    for t in (q_fa, k_fa, v_fa))
+                out, *_ = flash_attn_varlen_func(
                     q_fa, k_fa, v_fa,
-                    seqused_k=mask.sum(dim=1, dtype=torch.int32),
+                    cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens,
+                    max_seqlen_q=max_seqlen, max_seqlen_k=max_seqlen,
                     causal=self.causal,
                 )
+                # padded tokens get a zero output
+                x = out.new_zeros(B * N, self.num_heads, self.head_dim).index_copy(0, idx, out)
+                x = x.view(B, N, self.num_heads, self.head_dim)
             # FA4 returns (B, N, heads, head_dim) → back to (B, heads, N, head_dim)
             x = x.permute(0, 2, 1, 3)
         elif self.fused_attn:

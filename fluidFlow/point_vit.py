@@ -127,7 +127,8 @@ class PointViT(nn.Module):
         x = x.reshape(B, L // p, p, self.out_channels).permute(0, 3, 1, 2)  # (B, C, S, p)
         x = x.reshape(B, self.out_channels, L).float()
         if mask is not None:
-            x = x * mask.unsqueeze(1)
+            # where, not a product: NaN * 0 would keep garbage from padded rows
+            x = torch.where(mask.unsqueeze(1), x, 0.0)
         return x
 
     def forward(self, x, context, mask=None, return_loss=True, **kwargs):
@@ -143,7 +144,7 @@ class PointViT(nn.Module):
         err = (pred - x.float()) ** 2
         if mask is None:
             return err.mean()
-        return (err * mask.unsqueeze(1)).sum() / (mask.sum() * err.shape[1])
+        return torch.where(mask.unsqueeze(1), err, 0.0).sum() / (mask.sum() * err.shape[1])
 
     def sample(self, context, mask=None, **kwargs):
         self.eval()

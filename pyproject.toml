@@ -24,3 +24,6 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["fluidFlow*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]  # tests import data.* and fluidFlow.* from the repo root
