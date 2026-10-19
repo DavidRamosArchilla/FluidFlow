@@ -49,24 +49,25 @@ time_mode = "uniform"     # "uniform" or "first"
 max_train_samples = None
 max_valid_samples = None
 max_test_samples = None
-n_valid_rollouts = 16     # validation trajectories rolled out in full at every checkpoint
+n_valid_rollouts = 64     # validation trajectories rolled out in full at every checkpoint (16 was too noisy)
 # ---------- model config ----------
 patch_size = 1
 depth = 10
-hidden_size = 768
-num_heads = 12            # head_dim 64 (FA4 needs 32/64/128)
-mlp_ratio = 3
+hidden_size = 1024
+num_heads = 16            # head_dim 64 (FA4 needs 32/64/128)
+mlp_ratio = 4
 residual = True           # predict normalized u_{t+1} - u_t instead of u_{t+1}
 use_coord_pe = True       # Fourier embedding of the mesh coordinates instead of sin-cos node index
 num_frequencies = 16
 # ---------- unrolled training config ----------
 # fine-tune: start from the EMA weights of a one-step run (model config above must match)
-init_checkpoint = 'results/airfoil_unsteady/vit_ar_d10_h768/model-10.pt'  # None = from scratch
+init_checkpoint = 'results/airfoil_unsteady/vit_ar_d10_h1024/model-15.pt'  # None = from scratch
 # curriculum: (K, optimizer steps) stages in order; the last K is kept afterwards
-unroll_schedule = [(2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 10000)]
+# (the h768 fine-tune had its best validation rollout inside the K=32 stage, so it is longer here)
+unroll_schedule = [(2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 20000)]
 # from scratch: one-step stage first, then the same curriculum, e.g.
 # init_checkpoint = None
-# unroll_schedule = [(1, 200000), (2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 10000)]
+# unroll_schedule = [(1, 300000), (2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 20000)]
 detach_every = None       # truncate backprop every M unroll steps (None = full backprop)
 gradient_checkpointing = True  # checkpoint whole AR steps: memory ~flat in K, ~1.3x compute
 # ---------- training config ----------
@@ -79,7 +80,8 @@ muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999
 save_and_sample_every = 5000
-results_folder = 'results/airfoil_unsteady/vit_ar_d10_h768_unroll_ft'
+results_folder = 'results/airfoil_unsteady/vit_ar_d10_h1024_unroll_ft'
+select_best_checkpoint = True  # evaluate the EMA weights of the milestone with the lowest validation rollout MSE
 # ---------- evaluation config ----------
 eval_batch_size = 8
 eval_space = "physical"  # "physical", "normalized" or "both"
@@ -256,6 +258,17 @@ torch.save(
 
 trainer.train()
 # trainer.load(5)
+
+if select_best_checkpoint:
+    # every rank reads the files, so all of them evaluate the same weights
+    last = train_steps // save_and_sample_every
+    val_history = torch.load(f"{results_folder}/model-{last}.pt", map_location="cpu",
+                             weights_only=True)["test_loss_history"]
+    best = int(val_history.argmin()) + 1
+    trainer.ema.load_state_dict(torch.load(f"{results_folder}/model-{best}.pt", map_location="cpu",
+                                           weights_only=True)["ema"])
+    trainer.accelerator.print(f"Validation rollout MSE per milestone: {[round(v, 4) for v in val_history.tolist()]}")
+    trainer.accelerator.print(f"Evaluating the EMA weights of milestone {best} (step {best * save_and_sample_every})")
 
 # Autoregressive rollout on the test set from the first frame of each trajectory
 trainer.ema.ema_model.eval()
