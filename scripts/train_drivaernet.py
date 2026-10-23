@@ -40,26 +40,31 @@ split_dir = "/gpfs/scratch/upm106/david/denoising-diffusion-pytorch-fluid-mechan
 field_names = ("p",)
 max_valid_samples = 200   # validation cars evaluated at every milestone (None = all 1148)
 # ---------- model config ----------
-patch_size = 16           # consecutive (Morton-sorted) points per token: ~28k tokens per car
+patch_size = 8           # consecutive (Morton-sorted) points per token: ~28k tokens per car
 depth = 12
 hidden_size = 512
 num_heads = 8             # head_dim 64 (FA4 needs 32/64/128)
 mlp_ratio = 4
 num_frequencies = 6       # Fourier features of xyz added before patching (0 = raw xyz)
 # ---------- training config ----------
-train_batch_size = 8      # global batch, split over the GPUs
+train_batch_size = 256      # global batch, split over the GPUs
 gradient_accumulate_every = 1
 gradient_checkpointing = False  # ~45 GB per 4 cars without it on one GPU
-train_lr = 2e-4           # AdamW lr (1D params: biases, norms, patch embedder)
-train_steps = 100000
-muon_lr = 2e-4
+train_lr = 1e-4           # AdamW lr (1D params: biases, norms, patch embedder)
+train_steps = 350000
+muon_lr = 1e-4
 muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999
-save_and_sample_every = 10000
+save_and_sample_every = 50000
 results_folder = f"results/drivaernet/point_vit_p{patch_size}_d{depth}_h{hidden_size}"
+# ---------- parallelism config ----------
+# None = data parallel. An int cp splits every car over cp consecutive GPUs (keep cp <= 4 to
+# stay inside a node) and train_batch_size over the num_processes / cp groups
+context_parallel_size = 4
+context_parallel_backend = "ulysses"  # "ulysses" (needs num_heads % cp == 0) or "allgather"
 # ---------- evaluation config ----------
-eval_batch_size = 8
+eval_batch_size = 256
 export_vtk = True         # save the best / median / worst test cars with predicted pressure and error
 # -----------------------------------
 
@@ -99,7 +104,7 @@ trainer = Trainer(
     mixed_precision_type='bf16',
     results_folder=results_folder,
     save_and_sample_every=save_and_sample_every,
-    eta_min_scheduler=4e-6,
+    eta_min_scheduler=1e-6,
     max_grad_norm=1.0,
     use_muon=True,
     muon_lr=muon_lr,
@@ -109,7 +114,9 @@ trainer = Trainer(
     split_batches=True,
     dataloader_collate_fn=collate_fn,
     save_eval_samples=False,  # validation predictions are ~0.5 GB per milestone
-    compile_model=True
+    compile_model=True,
+    context_parallel_size=context_parallel_size,
+    context_parallel_backend=context_parallel_backend,
 )
 
 if trainer.accelerator.is_main_process:
@@ -118,7 +125,7 @@ if trainer.accelerator.is_main_process:
     torch.save(coefficients, os.path.join(results_folder, "norm_stats.pt"))
 
 trainer.train()
-# trainer.load(10)
+# trainer.load(7)
 
 # ---- prediction on the test set (multi-GPU if available) ----
 trainer.ema.ema_model.eval()

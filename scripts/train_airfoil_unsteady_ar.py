@@ -224,7 +224,7 @@ torch.save(
 )
 
 # trainer.train()
-# trainer.load(5)
+trainer.load(7)
 
 # Autoregressive rollout on the test set from the first frame of each trajectory
 trainer.ema.ema_model.eval()

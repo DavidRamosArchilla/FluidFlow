@@ -13,6 +13,10 @@ blocks are plain pre-norm transformer blocks (no adaLN).
 
 The interface matches :class:`fluidFlow.trainer.Trainer` with dict batches
 ``{"x": fields, "context": coords, "mask": mask}``.
+
+Long samples can be split over several GPUs with context parallelism (``cp``
+argument, see :mod:`fluidFlow.context_parallel`): every GPU embeds, transforms
+and decodes its slice of the tokens and only attention communicates.
 """
 
 import torch
@@ -39,8 +43,8 @@ class Block(nn.Module):
             self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim,
                            act_layer=lambda: nn.GELU(approximate="tanh"), drop=0, bias=bias)
 
-    def forward(self, x, mask=None):
-        x = x + self.attn(self.norm1(x), mask=mask)
+    def forward(self, x, mask=None, cp=None):
+        x = x + self.attn(self.norm1(x), mask=mask, cp=cp)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -54,6 +58,10 @@ class PointViT(nn.Module):
         num_frequencies: Fourier features of the (normalized) coordinates
             added to the raw ones before patching (0 = raw coordinates only).
     """
+    # attention has no positional encoding, so the tokens of a sample can be
+    # split over several GPUs (Trainer(context_parallel_size=...))
+    supports_context_parallel = True
+
     def __init__(
         self,
         in_channels=3,
@@ -109,8 +117,11 @@ class PointViT(nn.Module):
         enc = fourier_encode(coords.transpose(1, 2), self.num_frequencies)  # (B, L, d * 2F)
         return torch.cat([coords, enc.transpose(1, 2)], dim=1)
 
-    def predict(self, context, mask=None):
+    def predict(self, context, mask=None, cp=None):
         """context: (B, in_channels, L) coordinates, L a multiple of patch_size.
+        cp: optional :class:`fluidFlow.context_parallel.ContextParallel`; context
+        and mask then hold this GPU's slice of every sample (see
+        ``context_parallel.shard_batch``) and attention spans the whole CP group.
         Returns the (B, out_channels, L) fields in float32, zero on padded points."""
         B, _, L = context.shape
         p = self.patch_size
@@ -118,11 +129,15 @@ class PointViT(nn.Module):
         x = self.x_embedder(self.embed_points(context)).transpose(1, 2)  # (B, S, D)
         # a token is real if any of its points is
         token_mask = None if mask is None else mask.view(B, L // p, p).any(dim=-1)  # (B, S)
+        if cp is not None:
+            if token_mask is None:
+                token_mask = torch.ones(B, L // p, dtype=torch.bool, device=x.device)
+            cp = cp.prepare(token_mask)  # masks of the whole group, gathered once for all the blocks
         for block in self.blocks:
             if self.gradient_checkpointing and torch.is_grad_enabled():
-                x = checkpoint(block, x, token_mask, use_reentrant=False)
+                x = checkpoint(block, x, token_mask, cp, use_reentrant=False)
             else:
-                x = block(x, token_mask)
+                x = block(x, token_mask, cp)
         x = self.final_layer(self.norm_final(x))  # (B, S, p * C)
         x = x.reshape(B, L // p, p, self.out_channels).permute(0, 3, 1, 2)  # (B, C, S, p)
         x = x.reshape(B, self.out_channels, L).float()
@@ -131,25 +146,32 @@ class PointViT(nn.Module):
             x = torch.where(mask.unsqueeze(1), x, 0.0)
         return x
 
-    def forward(self, x, context, mask=None, return_loss=True, **kwargs):
+    def forward(self, x, context, mask=None, return_loss=True, cp=None, **kwargs):
         """
         x: (B, C, L) target fields
         context: (B, in_channels, L) point coordinates
         mask: (B, L) bool, True on real points
-        Returns the MSE over the real points.
+        cp: optional ContextParallel (see predict)
+        Returns the MSE over the real points. With cp, this GPU's share of the
+        MSE of the global batch: its squared errors over the real points of all
+        the GPUs, so that the shares add up to the same loss for any (dp, cp) layout.
         """
-        pred = self.predict(context, mask)
+        pred = self.predict(context, mask, cp)
         if not return_loss:
             return pred
         err = (pred - x.float()) ** 2
+        if cp is None:
+            if mask is None:
+                return err.mean()
+            return torch.where(mask.unsqueeze(1), err, 0.0).sum() / (mask.sum() * err.shape[1])
         if mask is None:
-            return err.mean()
-        return torch.where(mask.unsqueeze(1), err, 0.0).sum() / (mask.sum() * err.shape[1])
+            return err.sum() / cp.global_sum(torch.tensor(err.numel(), device=err.device))
+        return torch.where(mask.unsqueeze(1), err, 0.0).sum() / (cp.global_sum(mask.sum()) * err.shape[1])
 
-    def sample(self, context, mask=None, **kwargs):
+    def sample(self, context, mask=None, cp=None, **kwargs):
         self.eval()
         with torch.inference_mode():
-            return self.predict(context, mask)
+            return self.predict(context, mask, cp)
 
     def get_2d_params(self):
         """Parameters for Muon (weight matrices)."""

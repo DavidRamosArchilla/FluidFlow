@@ -45,6 +45,7 @@ hidden_size = 1024
 num_heads = 16
 factorize = True          # True if time_frames > 32 to save memory
 # ---------- training config ----------
+train_batch_size = 16
 train_lr = 2e-4           # AdamW lr (1D params: biases, norms, patch embedder)
 train_steps = 100000      # optimizer steps (each = gradient_accumulate_every micro-batches)
 # Muon (2D weights). "match_rms_adamw" scales the orthogonalised update to the
@@ -199,7 +200,7 @@ trainer = Trainer(
     flow_matching,
     dataset=dataset_train,
     dataset_test=dataset_valid,  # validation only during training
-    train_batch_size=16,
+    train_batch_size=train_batch_size,
     train_lr=train_lr,
     train_num_steps=train_steps,
     gradient_accumulate_every=1,  # gradient accumulation steps
@@ -214,7 +215,7 @@ trainer = Trainer(
     muon_lr=muon_lr,
     muon_adjust_lr_fn=muon_adjust_lr_fn,
     muon_weight_decay=muon_weight_decay,
-    # compile_model=True,
+    compile_model=True,
     split_batches=True,
 )
 
@@ -232,7 +233,7 @@ torch.save(
     os.path.join(results_folder, "norm_stats.pt"),
 )
 
-# trainer.train()
+trainer.train()
 # trainer.load(5)
 
 # Inference on the test set
@@ -243,12 +244,12 @@ if use_vae:
     if os.path.exists(latent_file):
         samples = torch.load(latent_file)
     else:
-        samples, seqs = trainer.eval_model(dataset_test, batch_size=1, use_autocast=True)
+        samples, seqs = trainer.eval_model(dataset_test, batch_size=train_batch_size, use_autocast=True)
 else:
     if os.path.exists(f"{results_folder}/test_predictions_ema.pt"):
         samples = torch.load(f"{results_folder}/test_predictions_ema.pt")
     else:
-        samples, seqs = trainer.eval_model(dataset_test, batch_size=1, use_autocast=True)
+        samples, seqs = trainer.eval_model(dataset_test, batch_size=train_batch_size, use_autocast=True)
 
 if trainer.accelerator.is_main_process:
     # ---- final evaluation (physical units, (N, F, C, L) fields) ----

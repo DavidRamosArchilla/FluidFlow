@@ -48,9 +48,12 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
         
-    def forward(self, x: torch.Tensor, rope=None, mask=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, rope=None, mask=None, cp=None) -> torch.Tensor:
         """mask: optional (B, N) bool key padding mask, True on the tokens to attend to.
-        With FA4 the masked-out tokens are dropped and get a zero output."""
+        With FA4 the masked-out tokens are dropped and get a zero output.
+        cp: optional :class:`fluidFlow.context_parallel.CPAttention`. x then holds
+        this GPU's slice of the tokens and attention runs over the whole CP group
+        (cp carries the masks of the group, mask is not used)."""
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) # 3, B, heads, N, head_dim
         q, k, v = qkv.unbind(0)
@@ -64,6 +67,13 @@ class Attention(nn.Module):
         if rope is not None:
             q = rope(q)
             k = rope(k)
+        if cp is not None:
+            # the gathered sequence is in rank order: only valid without positional encodings
+            assert rope is None, "context parallelism does not support rope"
+            # (B, heads, N, head_dim) -> (B, N, heads, head_dim), exchanged over the CP group
+            x = cp.attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+                             use_flash=is_flash_attn_available)
+            return self.proj_drop(self.proj(x.reshape(B, N, C)))
         # if i don't do this, it explodes when i compile the model, but only for some configurations 
         q = q.contiguous()
         k = k.contiguous()

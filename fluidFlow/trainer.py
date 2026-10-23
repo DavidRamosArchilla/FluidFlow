@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 from matplotlib import pyplot as plt
@@ -17,6 +18,8 @@ from contextlib import contextmanager, nullcontext
 from torch.distributed._composable.fsdp import FSDPModule
 
 from tqdm.auto import tqdm
+
+from .context_parallel import ContextParallel, cycle_epochs
 
 
 def cycle(dl):
@@ -114,7 +117,21 @@ class Trainer:
         eval_sampling_kwargs=None,
         dataloader_collate_fn=None,
         save_eval_samples=True,
+        context_parallel_size=None,
+        context_parallel_backend="ulysses",
     ):
+        """
+        context_parallel_size: None trains with plain data parallelism (accelerate
+            splits every batch over all the GPUs). An int cp arranges the GPUs in a
+            (dp, cp) grid instead (see fluidFlow.context_parallel): each sample is
+            split along its tokens over cp consecutive GPUs and the global batch
+            train_batch_size over the dp = num_processes / cp groups. cp = 1 is data
+            parallel with the same data order as cp > 1. The loss is the MSE of the
+            global batch, the same for every layout. Needs a model with
+            ``supports_context_parallel`` (e.g. PointViT) and dict batches with a mask.
+        context_parallel_backend: "ulysses" (all-to-all, num_heads % cp == 0) or
+            "allgather" (all-gather of K and V, any cp).
+        """
         super().__init__()
 
         # accelerator
@@ -150,19 +167,35 @@ class Trainer:
         # save the validation predictions at every milestone (sample-{milestone}.pt)
         self.save_eval_samples = save_eval_samples
 
+        # context parallelism: (dp, cp) grid of the GPUs, None = plain data parallel
+        self.cp = None
+        if context_parallel_size is not None:
+            if not getattr(diffusion_model, "supports_context_parallel", False):
+                raise ValueError(f"{type(diffusion_model).__name__} does not support context parallelism")
+            if not split_batches:
+                raise ValueError("context parallelism needs split_batches=True (train_batch_size is the global batch)")
+            self.cp = ContextParallel(context_parallel_size, backend=context_parallel_backend)
+            self.accelerator.print(f"Hybrid parallelism: {self.cp}")
+
         # dataset and dataloader
         # collate_fn: e.g. to pad variable-size samples; may return a dict batch (see split_batch)
         self.collate_fn = dataloader_collate_fn
-        dl = DataLoader(dataset, batch_size=train_batch_size, shuffle=True, pin_memory=True, num_workers=4, persistent_workers=True,
-                        collate_fn=self.collate_fn)
         if dataset_test is not None:
             self.dl_test = DataLoader(dataset_test, batch_size = train_batch_size, shuffle=False, pin_memory=True, num_workers=4,
                                       collate_fn=self.collate_fn)
         else:
             self.dl_test = None
 
-        dl = self.accelerator.prepare(dl)
-        self.dl = cycle(dl)
+        if self.cp is None:
+            dl = DataLoader(dataset, batch_size=train_batch_size, shuffle=True, pin_memory=True, num_workers=4, persistent_workers=True,
+                            collate_fn=self.collate_fn)
+            dl = self.accelerator.prepare(dl)
+            self.dl = cycle(dl)
+        else:
+            # the GPUs of a CP group load the same samples and keep their slice of the tokens
+            dl = self.cp.train_dataloader(dataset, train_batch_size, self.collate_fn, diffusion_model.patch_size,
+                                          pin_memory=True, num_workers=4, persistent_workers=True)
+            self.dl = cycle_epochs(dl)
 
         # optimizer
         # if use_muon:
@@ -372,8 +405,15 @@ class Trainer:
                     sequence, model_kwargs = split_batch(data)
                     sequence = sequence.to(device)
                     model_kwargs = {k: v.to(device) for k, v in model_kwargs.items()}
+                    if self.cp is not None:
+                        model_kwargs["cp"] = self.cp
                     with self.accelerator.autocast():
                         loss = self.model(sequence, **model_kwargs)
+                    if self.cp is not None:
+                        # each GPU returns its share of the loss of the global batch (the shares add
+                        # up to it); DDP averages the gradients over the GPUs instead of summing
+                        # them, hence the factor num_processes (also in the logged loss)
+                        loss = loss * accelerator.num_processes
 
                     self.accelerator.backward(loss)
                     accum_loss += loss.detach().float()
@@ -461,6 +501,10 @@ class Trainer:
         """
         # Prepare models
         collate_fn = self.collate_fn if collate_fn is None else collate_fn
+        if self.accelerator.split_batches:
+            # accelerate splits every batch over the processes: a multiple of their number is required
+            n = self.accelerator.num_processes
+            batch_size = n * math.ceil(batch_size / n)
         dl_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4, collate_fn=collate_fn)
         
         # Accelerate handles moving the model to the correct device even on 1 GPU

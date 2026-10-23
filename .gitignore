@@ -5,6 +5,8 @@ data/driveaernet
 run_job*.sh
 launcher.sh
 logs/*
+reports/
+scripts/slurm/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
