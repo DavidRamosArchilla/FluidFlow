@@ -302,14 +302,15 @@ def make_window_dataset(dataset, window, frame_stride=1, max_windows=None):
     return AutoregressiveWindowDataset(fields, conds, window, frame_stride=frame_stride, max_windows=max_windows)
 
 
-def make_rollout_dataset(dataset, max_samples=None):
+def make_rollout_dataset(dataset, max_samples=None, max_frames=None):
     """(fields, conds) TensorDataset -> (fields, conds, fields[:, 0]).
 
     Used to evaluate full autoregressive rollouts: the model receives the
     initial frame as ``context`` and the whole trajectory is the target.
-    ``max_samples`` keeps only the first trajectories (e.g. for validation).
+    ``max_samples`` keeps only the first trajectories (e.g. for validation);
+    ``max_frames`` keeps only the first frames (rollout of max_frames - 1 steps).
     """
-    fields, conds = dataset.tensors[0][:max_samples], dataset.tensors[1][:max_samples]
+    fields, conds = dataset.tensors[0][:max_samples, :max_frames], dataset.tensors[1][:max_samples]
     return TensorDataset(fields, conds, fields[:, 0].contiguous())
 
 

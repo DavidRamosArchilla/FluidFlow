@@ -49,7 +49,11 @@ time_mode = "uniform"     # "uniform" or "first"
 max_train_samples = None
 max_valid_samples = None
 max_test_samples = None
-n_valid_rollouts = 64     # validation trajectories rolled out in full at every checkpoint (16 was too noisy)
+# validation rollouts at every checkpoint. ~80% of the rollout error comes from a few high-AoA
+# trajectories that decorrelate after ~300 frames, so a full-length validation on a subset is
+# mostly noise: use every validation trajectory and stop where the predictions still track the GT
+n_valid_rollouts = None   # None = all validation trajectories
+valid_rollout_steps = 300  # AR steps of the validation rollouts (None = whole trajectory)
 # ---------- model config ----------
 patch_size = 1
 depth = 10
@@ -178,9 +182,10 @@ print("delta std per channel", delta_std.tolist())
 max_unroll = max(k for k, _ in unroll_schedule)
 windows_train = make_window_dataset(dataset_train, window=max_unroll)
 # full rollouts of a few validation trajectories (MSE over all frames, normalized space)
-rollout_valid = make_rollout_dataset(dataset_valid, max_samples=n_valid_rollouts)
+n_valid_steps = n_ar_steps if valid_rollout_steps is None else valid_rollout_steps
+rollout_valid = make_rollout_dataset(dataset_valid, max_samples=n_valid_rollouts, max_frames=n_valid_steps + 1)
 print(f"AR windows: train {len(windows_train)} (K_max {max_unroll}), "
-      f"valid rollouts {len(rollout_valid)}; rollout steps {n_ar_steps}")
+      f"valid rollouts {len(rollout_valid)} x {n_valid_steps} steps; test rollout steps {n_ar_steps}")
 
 model = ViT(
     depth=depth,
@@ -218,8 +223,8 @@ print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 trainer = Trainer(
     model,
     dataset=windows_train,
-    dataset_test=rollout_valid,  # full-rollout validation MSE during training
-    eval_sampling_kwargs={"num_steps": n_ar_steps},
+    dataset_test=rollout_valid,  # rollout validation MSE during training
+    eval_sampling_kwargs={"num_steps": n_valid_steps},
     train_batch_size=train_batch_size,
     train_lr=train_lr,
     train_num_steps=train_steps,
