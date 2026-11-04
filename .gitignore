@@ -2,11 +2,15 @@
 results/
 data/airfoil_unsteady/airfoil
 data/driveaernet
+data/hump
+data/cylinder
 run_job*.sh
 launcher.sh
 logs/*
 reports/
 scripts/slurm/
+tex/
+scripts/paper
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
