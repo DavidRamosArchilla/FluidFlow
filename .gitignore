@@ -3,10 +3,13 @@ results/
 data/airfoil_unsteady/airfoil
 data/driveaernet
 run_job*.sh
-launcher.sh
+launcher*.sh
 logs/*
 reports/
 scripts/slurm/
+tex/
+scripts/paper
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

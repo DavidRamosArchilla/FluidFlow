@@ -549,6 +549,9 @@ class Sampler:
         return _sample_fn
 
 class FlowMatching(nn.Module):
+    
+    supports_context_parallel = True
+
     def __init__(
         self,
         sampler,

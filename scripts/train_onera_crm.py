@@ -9,24 +9,24 @@ import torch
 
 
 # you need first to download the data --> https://entrepot.recherche.data.gouv.fr/file.xhtml?persistentId=doi:10.57745/Z9LDY8&version=2.0
-data_dir = "/path/to/onera_data"
+data_dir = "../denoising-diffusion-pytorch-fluid-mechanics-main/data/onera_data"
 
 dataset_train, dataset_test, coefficients = load_onera_crm(data_dir)
 
 model = DiT(
     depth=12,
-    hidden_size=256,
-    patch_size=1,
-    num_heads=8,
+    hidden_size=512,
+    patch_size=4,
+    num_heads=16,
     input_size=dataset_train.tensors[0].shape[2],
     cond_dim=dataset_train.tensors[1].shape[1],
-    class_dropout_prob=0.2,
+    class_dropout_prob=0.15,
     in_channels=dataset_train.tensors[0].shape[1],
     use_swiglu=True,
-    attn_type="linear",
+    attn_type="vanilla",
     qk_norm=True, # to avoid stability issues with bf16
     mlp_ratio=4,
-    use_rope=True
+    use_rope=False
 )
 print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 
@@ -38,17 +38,16 @@ flow_matching = create_flow_matching(
     num_sampling_steps=500,
 )
 
-results_folder = 'results/onera_crm_experiment'
+results_folder = 'results/p4_d512_vanilla'
 train_steps = 300000
 trainer = Trainer(
     flow_matching,
     dataset=dataset_train,
     # dataset_test=dataset_test,
-    train_batch_size=2,
+    train_batch_size=1,
     train_lr=2e-4,
-    num_samples=9,
     train_num_steps=train_steps+4,  # total training steps
-    gradient_accumulate_every=16,  # gradient accumulation steps
+    gradient_accumulate_every=4,  # gradient accumulation steps
     ema_decay=0.995,  # exponential moving average decay
     amp = True,                       # turn on mixed precision
     mixed_precision_type='bf16',
@@ -57,7 +56,13 @@ trainer = Trainer(
     eta_min_scheduler=1e-6,
     max_grad_norm=1.0,
     compile_model=True, 
-    split_batches=True
+    split_batches=True,
+    context_parallel_size=4,
+    context_parallel_backend="ulysses",
+    use_muon=True,
+    muon_lr=2e-4,
+    muon_adjust_lr_fn="match_rms_adamw",
+    muon_weight_decay=1e-2,
 )
 
 trainer.train()
