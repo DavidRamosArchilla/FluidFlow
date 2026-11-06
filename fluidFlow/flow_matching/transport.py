@@ -641,10 +641,12 @@ class FlowMatching(nn.Module):
             loss += terms["cos_loss"].mean()
         return loss
 
-    def sample(self, classes, return_all_steps=False, **model_kwargs):
+    def sample(self, classes, return_all_steps=False, num_steps=None, **model_kwargs):
+        """num_steps: ODE steps, default num_sampling_steps (e.g. fewer for a cheap validation
+        during training: Trainer(eval_sampling_kwargs={"num_steps": 100}))."""
         sample_fn = self.sampler.sample_ode(
             sampling_method=self.sampling_method,
-            num_steps=self.num_sampling_steps,
+            num_steps=self.num_sampling_steps if num_steps is None else num_steps,
             atol=self.sampler_atol,
             rtol=self.sampler_rtol,
             reverse=self.reverse_sampling,

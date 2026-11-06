@@ -8,10 +8,12 @@ from torch.utils.data import TensorDataset
 NWALLP = 260774  # number of points on the aircraft skin
 
 def load_onera_crm(data_dir, pad_length=None):
-    X_train_tot = np.load(data_dir + '/X_train.npy')
-    Y_train_tot = np.load(data_dir + '/Ytrain.npy')
-    X_test = np.load(data_dir + '/X_test.npy')
-    Y_test = np.load(data_dir + '/Ytest.npy')
+    # memory-mapped: only the conditions (one row per case) of X are read, which matters when
+    # hundreds of processes load the data at once
+    X_train_tot = np.load(data_dir + '/X_train.npy', mmap_mode='r')
+    Y_train_tot = np.load(data_dir + '/Ytrain.npy', mmap_mode='r')
+    X_test = np.load(data_dir + '/X_test.npy', mmap_mode='r')
+    Y_test = np.load(data_dir + '/Ytest.npy', mmap_mode='r')
 
     df_description = pd.read_csv(data_dir + '/describe_train_test_repartition_with_weights.csv', index_col=0)
     df_test = df_description.loc[~df_description['Train']]
