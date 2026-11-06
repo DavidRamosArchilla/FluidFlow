@@ -1,12 +1,12 @@
-"""Context parallelism must reproduce the single-GPU PointViT: same predictions,
-loss and gradients, and the Trainer must take the same optimizer steps for every
-(dp, cp) layout of the GPUs.
+"""Context parallelism must reproduce the single-GPU PointViT and DiT (also inside
+FlowMatching): same predictions, loss and gradients, and the Trainer must take the
+same optimizer steps for every (dp, cp) layout of the GPUs.
 
 The sharding tests run anywhere with pytest. The multi-GPU tests need a GPU
 node; they run under torchrun (no pytest needed) for every CP size dividing the
 number of GPUs, both backends, and FA4 and SDPA attention:
 
-    torchrun --nproc-per-node=4 tests/test_context_parallel.py
+    torchrun --nproc-per-node=4 tests/test_context_parallel.py [words: run only the checks named so]
 """
 import gc
 import os
@@ -26,6 +26,7 @@ import fluidFlow.attention as attention
 from data.load_drivaernet import drivaernet_collate_fn
 from fluidFlow.attention import Attention
 from fluidFlow.context_parallel import BACKENDS, ContextParallel, balanced_token_starts, shard_batch, unshard
+from fluidFlow.dit import DiT
 from fluidFlow.point_vit import PointViT
 
 
@@ -56,6 +57,21 @@ def test_shard_unshard_roundtrip():
         assert sum(s["mask"].sum() for s in shards) == batch["mask"].sum()
         tokens = torch.stack([s["mask"].view(len(lengths), -1, 16).any(-1).sum(1) for s in shards])  # (size, B)
         assert (tokens.max(0).values - tokens.min(0).values <= 1).all()
+
+
+def test_tuple_batch_sharding():
+    """Tuple batches (fields, conditions) of equal-length sequences: the fields are split, the
+    conditions copied, and the padding at the end of the last slices is masked out."""
+    from fluidFlow.context_parallel import ShardCollate
+    g = torch.Generator().manual_seed(0)
+    samples = [(torch.randn(4, 4008, generator=g), torch.randn(3, generator=g)) for _ in range(2)]
+    for size in [2, 3, 4]:
+        shards = [ShardCollate(None, r, size, 4)(samples) for r in range(size)]
+        full = torch.ones(2, 4008, dtype=torch.bool)
+        x = unshard([s["x"] for s in shards], full, 4)
+        assert torch.equal(x, torch.stack([f for f, _ in samples]))
+        assert all(torch.equal(s["classes"], torch.stack([c for _, c in samples])) for s in shards)
+        assert sum(s["mask"].sum() for s in shards) == 2 * 4008
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +116,14 @@ def check_collective_adjoints(cp):
         dots = torch.stack([(out * y).sum(), (x * x.grad).sum()]).detach()
         dist.all_reduce(dots)
         m[f"{name}_adjoint_rel_err"] = abs(dots[0].item() / dots[1].item() - 1)
+    # broadcast: every GPU of the group ends with the draws of its first GPU
+    for dtype_name, x in [("float", torch.rand(5, device="cuda")), ("bool", torch.rand(5, device="cuda") < 0.5)]:
+        b = cp.broadcast(x).float()
+        gathered = [torch.empty_like(b) for _ in range(cp.size)]
+        dist.all_gather(gathered, b, group=cp.group)
+        m[f"broadcast_{dtype_name}_max_diff"] = max((g - gathered[0]).abs().max().item() for g in gathered)
+        if cp.rank == 0:
+            m[f"broadcast_{dtype_name}_max_diff"] += (b - x.float()).abs().max().item()
     m["ok"] = all(v < 1e-6 for v in m.values())
     return m
 
@@ -228,6 +252,152 @@ def check_trainer(world, backend, compile=False, steps=3, accumulate=1):
     return m
 
 
+# ---------------------------------------------------------------------------
+# DiT and flow matching on tuple batches of equal-length sequences (e.g. ONERA CRM)
+# ---------------------------------------------------------------------------
+DIT_P, DIT_C = 4, 4
+DIT_L = DIT_P * 1002  # 1002 tokens: not a multiple of cp, so the last slices end with padding
+
+
+def _dit(rope=False, grad_ckpt=False, dropout=0.0):
+    torch.manual_seed(0)
+    model = DiT(input_size=DIT_L, patch_size=DIT_P, in_channels=DIT_C, cond_dim=3, hidden_size=512, depth=3,
+                num_heads=8, use_swiglu=True, qk_norm=True, use_rope=rope, class_dropout_prob=dropout).cuda()
+    # adaLN and the output layer start at zero: give them weights so that every path has gradients
+    for name, p in model.named_parameters():
+        if "adaLN_modulation" in name or "final_layer.linear" in name:
+            torch.nn.init.normal_(p, std=0.02)
+    if grad_ckpt:
+        model.enable_gradient_checkpointing()
+    return model
+
+
+def _dit_batch(B=2, seed=4):
+    g = torch.Generator().manual_seed(seed)
+    return torch.randn(B, DIT_C, DIT_L, generator=g).cuda(), torch.randn(B, 3, generator=g).cuda()
+
+
+def _shard_sequences(t, cp):
+    """(B, ..., L) equal-length sequences -> this rank's slice and its (B, L_local) point mask."""
+    full = torch.ones(t.shape[0], t.shape[-1], dtype=torch.bool, device=t.device)
+    local = shard_batch({"t": t, "mask": full}, cp.rank, cp.size, DIT_P)
+    return local["t"], local["mask"]
+
+
+def check_dit(cp, use_flash, rope=False, grad_ckpt=False, compile=False):
+    """DiT on sequences split over the CP group (sin-cos positions, RoPE, adaLN conditioning,
+    padded slices): output, input gradient and parameter gradients."""
+    attention.is_flash_attn_available = use_flash
+    model = _dit(rope, grad_ckpt)
+    x, classes = _dit_batch()
+    t = torch.tensor([0.3, 0.8], device="cuda")
+    drop = torch.tensor([False, True], device="cuda")  # a conditional and an unconditional sample
+    grad_out = torch.randn_like(x)
+
+    xr = x.clone().requires_grad_()
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out_ref = model(xr, t, classes, force_drop_ids=drop)
+    (out_ref.float() * grad_out).sum().backward()
+    grads_ref = _flat_grads(model)
+    model.zero_grad()
+
+    xl, mask = _shard_sequences(x, cp)
+    xl.requires_grad_()
+    if compile:
+        torch._dynamo.reset()
+    fwd = torch.compile(model) if compile else model
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out = fwd(xl, t, classes, force_drop_ids=drop, mask=mask, cp=cp)
+    (out.float() * _shard_sequences(grad_out, cp)[0] * mask.unsqueeze(1)).sum().backward()
+    grads = _flat_grads(model)
+    dist.all_reduce(grads, group=cp.group)
+
+    full = torch.ones(x.shape[0], DIT_L, dtype=torch.bool, device="cuda")
+    pred = _gather_unshard(out.detach().float(), full, cp, DIT_P)
+    x_grad = _gather_unshard(xl.grad, full, cp, DIT_P)
+    m = {"out_rel_err": ((pred - out_ref.float()).abs().max() / out_ref.float().abs().max()).item(),
+         "x_grad_rel_err": ((x_grad - xr.grad).abs().max() / xr.grad.abs().max()).item(),
+         **_grad_metrics(grads, grads_ref)}
+    m["ok"] = m["out_rel_err"] < 3e-2 and m["x_grad_rel_err"] < 3e-2 and _grads_ok(m)
+    return m
+
+
+def check_flow_matching(cp):
+    """FlowMatching(DiT) loss and gradients on sequences split over the CP group. The noise is
+    the one of the single-GPU reference; the diffusion times differ on every GPU (as with the
+    Trainer's per-GPU seeds), so they only match if the group takes the time of its first GPU."""
+    from fluidFlow.flow_matching import create_flow_matching
+    attention.is_flash_attn_available = attention_fa4
+    fm = create_flow_matching(neural_net=_dit(), input_size=DIT_L).cuda()
+    x, classes = _dit_batch()
+    noise = torch.randn(x.shape, generator=torch.Generator().manual_seed(5)).cuda()
+    t_ref = torch.tensor([0.3, 0.8], device="cuda")
+    transport = fm.sampler.transport
+
+    def sample(x1, *args):
+        if x1.shape[-1] == DIT_L:
+            return t_ref, noise, x1
+        return t_ref + 0.1 * cp.rank, _shard_sequences(noise, cp)[0], x1
+    transport.sample = sample
+
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        loss_ref = fm(x, classes)
+    loss_ref.backward()
+    grads_ref = _flat_grads(fm)
+    fm.zero_grad()
+    xl, mask = _shard_sequences(x, cp)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        loss = fm(xl, classes, mask=mask, cp=cp)
+    loss.backward()
+    del transport.sample
+    # every CP group holds the same samples and the loss is normalised over all the GPUs
+    grads = _flat_grads(fm)
+    dist.all_reduce(grads)
+    m = {"loss_rel_err": abs(cp.global_sum(loss.detach()).item() / loss_ref.item() - 1), **_grad_metrics(grads, grads_ref)}
+    m["ok"] = m["loss_rel_err"] < 1e-3 and _grads_ok(m)
+    return m
+
+
+def check_flow_matching_trainer(world, steps=3):
+    """The Trainer with FlowMatching(DiT) on a TensorDataset of (fields, conditions), as
+    scripts/train_onera_crm.py, for every (dp, cp) layout: the same parameters on all the GPUs
+    after the steps, and a first loss independent of the layout (the noise differs, so ~1%)."""
+    from torch.utils.data import TensorDataset
+    from fluidFlow.flow_matching import create_flow_matching
+    from fluidFlow.trainer import Trainer
+    attention.is_flash_attn_available = attention_fa4
+    g = torch.Generator().manual_seed(6)
+    dataset = TensorDataset(torch.randn(16, DIT_C, DIT_L, generator=g), torch.randn(16, 3, generator=g))
+    m, first_loss = {}, {}
+    for size in [s for s in (1, 2, 4, 8) if world % s == 0]:
+        fm = create_flow_matching(neural_net=_dit(dropout=0.2), input_size=DIT_L)
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = Trainer(
+                fm, dataset, train_batch_size=8, train_num_steps=steps, train_lr=1e-3, muon_lr=1e-3,
+                muon_adjust_lr_fn="match_rms_adamw", use_muon=True, max_grad_norm=1.0, amp=True,
+                mixed_precision_type="bf16", save_and_sample_every=10**9, results_folder=tmp, split_batches=True,
+                context_parallel_size=size, context_parallel_backend="ulysses")
+            trainer.train()
+            params = torch.cat([p.detach().flatten().float() for p in trainer.accelerator.unwrap_model(trainer.model).parameters()])
+            params_rank0 = params.clone()
+            dist.broadcast(params_rank0, src=0)
+            loss = torch.zeros(steps, device="cuda")
+            if dist.get_rank() == 0:  # logged on the main process only
+                loss.copy_(torch.tensor(trainer.loss_history))
+            dist.broadcast(loss, src=0)
+            m[f"cp{size}_param_diff_between_gpus"] = (params - params_rank0).abs().max().item()
+            first_loss[size] = loss[0].item()
+            m[f"cp{size}_losses_finite"] = bool(torch.isfinite(loss).all())
+            del trainer
+            gc.collect()
+    for size, value in first_loss.items():
+        m[f"cp{size}_first_loss"] = value
+    m["ok"] = all(v == 0 for k, v in m.items() if k.endswith("between_gpus")) and \
+        all(v for k, v in m.items() if k.endswith("finite")) and \
+        max(first_loss.values()) / min(first_loss.values()) < 1.1
+    return m
+
+
 attention_fa4 = attention.is_flash_attn_available
 
 
@@ -236,9 +406,12 @@ def main():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     world, rank = dist.get_world_size(), dist.get_rank()
     flash_options = [True, False] if attention_fa4 else [False]
+    only = sys.argv[1:]  # run only the checks whose name contains one of these words
     results = []
 
     def run(name, fn, *args, **kwargs):
+        if only and not any(word in name for word in only):
+            return
         try:
             m = fn(*args, **kwargs)
         except Exception:
@@ -265,11 +438,19 @@ def main():
                 run(f"point_vit {tag}", check_point_vit, cp, use_flash)
             run(f"point_vit cp={size} {backend} grad checkpointing", check_point_vit, cp, attention_fa4, grad_ckpt=True)
             run(f"point_vit cp={size} {backend} torch.compile", check_point_vit, cp, attention_fa4, compile=True)
+            for use_flash in flash_options:
+                run(f"dit cp={size} {backend} {'fa4' if use_flash else 'sdpa'}", check_dit, cp, use_flash)
+            run(f"dit cp={size} {backend} rope", check_dit, cp, attention_fa4, rope=True)
+            run(f"dit cp={size} {backend} rope, grad checkpointing", check_dit, cp, attention_fa4, rope=True,
+                grad_ckpt=True)
+            run(f"dit cp={size} {backend} torch.compile", check_dit, cp, attention_fa4, compile=True)
+            run(f"flow matching dit cp={size} {backend}", check_flow_matching, cp)
     for backend in BACKENDS:
         run(f"trainer steps dp x cp layouts {backend}", check_trainer, world, backend)
     run("trainer steps dp x cp layouts ulysses, gradient accumulation 2", check_trainer, world, "ulysses",
         accumulate=2)
     run("trainer steps dp x cp layouts ulysses torch.compile", check_trainer, world, "ulysses", compile=True)
+    run("trainer flow matching dit, tuple batches, dp x cp layouts", check_flow_matching_trainer, world)
 
     failed = [name for name, m in results if not m["ok"]]
     if rank == 0:

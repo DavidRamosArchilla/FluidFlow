@@ -1,4 +1,4 @@
-from data.load_onera_crm import load_onera_crm
+from data.load_onera_crm import load_onera_crm, NWALLP
 from fluidFlow.dit import DiT
 from fluidFlow.trainer import Trainer
 from fluidFlow.flow_matching import create_flow_matching
@@ -11,12 +11,17 @@ import torch
 # you need first to download the data --> https://entrepot.recherche.data.gouv.fr/file.xhtml?persistentId=doi:10.57745/Z9LDY8&version=2.0
 data_dir = "../denoising-diffusion-pytorch-fluid-mechanics-main/data/onera_data"
 
-dataset_train, dataset_test, coefficients = load_onera_crm(data_dir)
+patch_size = 4                # points per token (1: every skin point is a token)
+context_parallel_size = 4     # GPUs per sample (None = data parallel); ulysses needs num_heads % cp == 0
+
+# pad the 260774 skin points to a whole number of patches (and of patches per GPU with
+# context parallelism): 260864 = 256 x 1019
+dataset_train, dataset_test, coefficients = load_onera_crm(data_dir, pad_length=260864)
 
 model = DiT(
     depth=12,
     hidden_size=512,
-    patch_size=4,
+    patch_size=patch_size,
     num_heads=16,
     input_size=dataset_train.tensors[0].shape[2],
     cond_dim=dataset_train.tensors[1].shape[1],
@@ -38,7 +43,7 @@ flow_matching = create_flow_matching(
     num_sampling_steps=500,
 )
 
-results_folder = 'results/p4_d512_vanilla'
+results_folder = f'results/p{patch_size}_d512_vanilla'
 train_steps = 300000
 trainer = Trainer(
     flow_matching,
@@ -57,7 +62,7 @@ trainer = Trainer(
     max_grad_norm=1.0,
     compile_model=True, 
     split_batches=True,
-    context_parallel_size=4,
+    context_parallel_size=context_parallel_size,
     context_parallel_backend="ulysses",
     use_muon=True,
     muon_lr=2e-4,
@@ -73,9 +78,10 @@ trainer.ema.ema_model.eval()
 samples, seqs = trainer.eval_model(dataset_test, batch_size=16, use_autocast=True)
 
 if trainer.accelerator.is_main_process:
-    samples = (samples.cpu() * coefficients['train_std']) + coefficients['train_mean']
+    # drop the padding
+    samples = (samples[..., :NWALLP].cpu() * coefficients['train_std']) + coefficients['train_mean']
     torch.save(samples, f"{results_folder}/test_predictions_ema.pt")
-    test_data = (dataset_test.tensors[0].cpu() * coefficients['train_std']) + coefficients['train_mean']
+    test_data = (dataset_test.tensors[0][..., :NWALLP].cpu() * coefficients['train_std']) + coefficients['train_mean']
     evaluator = RegressionEvaluator()
     metrics = evaluator(test_data, samples)
     evaluator.print_metrics()

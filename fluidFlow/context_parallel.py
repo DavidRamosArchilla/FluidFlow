@@ -24,10 +24,11 @@ does not depend on the (dp, cp) layout; :class:`fluidFlow.trainer.Trainer`
 multiplies it by the number of GPUs because DDP averages the gradients instead
 of summing them.
 
-The gathered sequence is in rank order, not in the original token order: this
-is exact for models without positional encodings inside attention, such as
-:class:`fluidFlow.point_vit.PointViT` (positions enter through the point
-coordinates).
+Attention only sees the tokens through q, k and v, so the order of the gathered
+sequence does not matter. Positional encodings must use the global positions of
+the local tokens: :class:`fluidFlow.point_vit.PointViT` has none (positions enter
+through the point coordinates), :class:`fluidFlow.dit.DiT` offsets its sin-cos
+embedding and RoPE by :meth:`ContextParallel.token_offset`.
 
 Usage (the Trainer does this when ``context_parallel_size`` is set)::
 
@@ -41,7 +42,7 @@ import math
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, default_collate
 
 BACKENDS = ("ulysses", "allgather")
 
@@ -109,18 +110,39 @@ def unshard(chunks, mask, patch_size):
     return out
 
 
+def tuple_batch_to_dict(batch, patch_size):
+    """Tuple batch of equal-length sequences, ``(target (B, C, L), classes[, context (B, C', L)])``
+    as read by ``Trainer.split_batch``, -> dict batch with an all-True (B, L) point mask,
+    which :func:`shard_batch` can slice."""
+    target = batch[0]
+    B, L = target.shape[0], target.shape[-1]
+    if L % patch_size:
+        raise ValueError(f"sequence length {L} must be a multiple of patch_size {patch_size}")
+    out = {"x": target, "classes": batch[1], "mask": torch.ones(B, L, dtype=torch.bool)}
+    if len(batch) > 2:
+        out["context"] = batch[2]
+    return out
+
+
 class ShardCollate:
-    """collate_fn wrapper keeping the slice of one CP rank (picklable, for workers)."""
+    """collate_fn wrapper keeping the slice of one CP rank (picklable, for workers).
+
+    Works on dict batches with a (B, L) ``mask`` (e.g. ``drivaernet_collate_fn``) and
+    on tuple batches of equal-length sequences (e.g. a TensorDataset of (fields, conditions)).
+    """
     def __init__(self, collate_fn, rank, size, patch_size):
-        self.collate_fn = collate_fn
+        self.collate_fn = default_collate if collate_fn is None else collate_fn
         self.rank = rank
         self.size = size
         self.patch_size = patch_size
 
     def __call__(self, samples):
         batch = self.collate_fn(samples)
+        if isinstance(batch, (list, tuple)):
+            batch = tuple_batch_to_dict(batch, self.patch_size)
         if not (isinstance(batch, dict) and "mask" in batch):
-            raise TypeError("context parallelism needs dict batches with a (B, L) 'mask' (see drivaernet_collate_fn)")
+            raise TypeError("context parallelism needs dict batches with a (B, L) 'mask' "
+                            "(see drivaernet_collate_fn) or tuple batches (target, classes[, context])")
         # every rank must get tokens of every sample (empty varlen segments are untested in FA4)
         min_points = int(batch["mask"].sum(dim=1).min())
         if min_points <= (self.size - 1) * self.patch_size:
@@ -233,6 +255,20 @@ class ContextParallel:
             collate_fn = ShardCollate(collate_fn, self.rank, self.size, patch_size)
         return DataLoader(dataset, batch_size=batch_size // self.dp_size, sampler=sampler, drop_last=True,
                           collate_fn=collate_fn, **loader_kwargs)
+
+    def token_offset(self, num_tokens):
+        """Index of this GPU's first token in sequences of ``num_tokens`` tokens (see shard_batch)."""
+        return balanced_token_starts(num_tokens, self.size)[self.rank]
+
+    @torch.compiler.disable
+    def broadcast(self, t):
+        """t of the first GPU of the CP group, on all the GPUs of the group: random draws
+        that must be the same for every slice of a sample (diffusion time, CFG dropout)."""
+        if self.group is None:
+            return t
+        out = t.to(torch.uint8) if t.dtype == torch.bool else t.contiguous().clone()
+        dist.broadcast(out, src=dist.get_global_rank(self.group, 0), group=self.group)
+        return out.bool() if t.dtype == torch.bool else out
 
     @torch.compiler.disable
     def all_reduce(self, t):

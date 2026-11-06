@@ -73,6 +73,9 @@ class ViT(DiT):
         detach_every: truncate backprop through the unroll every M steps
             (None = full backprop through all K steps).
     """
+    # its own forward (rollouts, coordinate embedding) does not handle sequence slices
+    supports_context_parallel = False
+
     def __init__(self, out_channels=None, residual=True, coords=None, num_frequencies=16,
                  valid_length=None, unroll_schedule=None, detach_every=None, **kwargs):
         kwargs.setdefault("class_dropout_prob", 0.0)  # deterministic regression, no CFG
