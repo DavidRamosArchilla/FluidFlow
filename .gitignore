@@ -2,6 +2,8 @@
 results/
 data/airfoil_unsteady/airfoil
 data/driveaernet
+data/hump
+data/cylinder
 run_job*.sh
 launcher*.sh
 logs/*

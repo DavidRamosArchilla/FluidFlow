@@ -54,8 +54,8 @@ residual = True           # predict normalized u_{t+1} - u_t instead of u_{t+1}
 use_coord_pe = True       # Fourier embedding of the mesh coordinates instead of sin-cos node index
 num_frequencies = 16
 # ---------- training config ----------
-train_batch_size = 16
-gradient_accumulate_every = 1
+train_batch_size = 32
+gradient_accumulate_every = 2
 train_lr = 2e-4           # AdamW lr (1D params: biases, norms, patch embedder)
 train_steps = 400000      # optimizer steps (each = gradient_accumulate_every micro-batches)
 muon_lr = 2e-4
@@ -63,6 +63,7 @@ muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999
 results_folder = 'results/airfoil_unsteady/vit_ar_d10_h1024_400k'
+
 # ---------- evaluation config ----------
 eval_batch_size = 8
 eval_space = "physical"  # "physical", "normalized" or "both"
