@@ -25,10 +25,10 @@ patch_size = 1                # points per token (1: every skin point is a token
 context_parallel_size = 8
 # ---------- training ----------
 train_batch_size = 32         # global batch: one sample per CP group
-train_steps = 37500           # 1.2M samples, as the 300k steps x 4 of the p = 4 recipe (~22 h on 256 GPUs)
-save_and_sample_every = 3750  # checkpoint + validation (10 milestones)
+train_steps = 50000           # 1.2M samples, as the 300k steps x 4 of the p = 4 recipe (~22 h on 256 GPUs)
+save_and_sample_every = 5000  # checkpoint + validation (10 milestones)
 # ---------- evaluation ----------
-val_cases = 16                # test cases sampled at every milestone (the final evaluation uses all)
+val_cases = 32                # test cases sampled at every milestone (the final evaluation uses all)
 val_sampling_steps = 100      # ODE steps of that validation (the final evaluation uses num_sampling_steps)
 num_sampling_steps = 500
 
