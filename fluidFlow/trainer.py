@@ -128,7 +128,9 @@ class Trainer:
             train_batch_size over the dp = num_processes / cp groups. cp = 1 is data
             parallel with the same data order as cp > 1. The loss is the MSE of the
             global batch, the same for every layout. Needs a model with
-            ``supports_context_parallel`` (e.g. PointViT) and dict batches with a mask.
+            ``supports_context_parallel`` (PointViT, or FlowMatching around a 1D DiT with
+            full attention) and dict batches with a mask or tuple batches (target, classes)
+            of equal-length sequences.
         context_parallel_backend: "ulysses" (all-to-all, num_heads % cp == 0) or
             "allgather" (all-gather of K and V, any cp).
         """
@@ -176,6 +178,9 @@ class Trainer:
                 raise ValueError("context parallelism needs split_batches=True (train_batch_size is the global batch)")
             self.cp = ContextParallel(context_parallel_size, backend=context_parallel_backend)
             self.accelerator.print(f"Hybrid parallelism: {self.cp}")
+            # different random numbers on every GPU (e.g. the flow matching noise of each slice of
+            # a sample must be independent); the draws a CP group must share are broadcast in it
+            torch.manual_seed((torch.initial_seed() + self.accelerator.process_index) % 2**63)
 
         # dataset and dataloader
         # collate_fn: e.g. to pad variable-size samples; may return a dict batch (see split_batch)

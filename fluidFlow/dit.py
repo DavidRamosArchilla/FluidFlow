@@ -157,9 +157,12 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=bias)
         )
 
-    def forward(self, x, c, feat_rope=None):
+    def forward(self, x, c, feat_rope=None, mask=None, cp=None):
+        """mask, cp: token mask and CPAttention of a context parallel slice (see DiT.forward)."""
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope)
+        h = modulate(self.norm1(x), shift_msa, scale_msa)
+        h = self.attn(h, rope=feat_rope) if cp is None else self.attn(h, rope=feat_rope, mask=mask, cp=cp)
+        x = x + gate_msa.unsqueeze(1) * h
         x = x.contiguous()
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))       
         return x
@@ -192,10 +195,11 @@ class WindowBlock(DiTBlock):
         self.window_size = window_size
         # shift_size will be ignored for the moment
 
-    def forward(self, x, c, feat_rope=None):
+    def forward(self, x, c, feat_rope=None, mask=None, cp=None):
+        assert cp is None, "window attention does not support context parallelism"
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = modulate(self.norm1(x), shift_msa, scale_msa)
-        x_windows = window_partition(x, self.window_size) 
+        x_windows = window_partition(x, self.window_size)
         attn_windows = self.attn(x_windows).view(x.shape) # window reverse operation
         x = x + gate_msa.unsqueeze(1) * attn_windows
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
@@ -296,6 +300,8 @@ class DiT(nn.Module):
         self.num_heads = num_heads
         self.hidden_size = hidden_size
         self.cond_dim = cond_dim
+        self.attn_type = attn_type
+        self.num_experts = num_experts
         self.self_condition = False  # Not used in DiT, this is here for interface compatibility
         if isinstance(input_size, int):
             self.x_embedder = PatchEmbed1D(input_size, patch_size, in_channels, hidden_size)
@@ -348,6 +354,13 @@ class DiT(nn.Module):
         )
         self.initialize_weights()
         self.gradient_checkpointing = False
+
+    @property
+    def supports_context_parallel(self):
+        """A sequence can be split over several GPUs (Trainer(context_parallel_size=...)) for
+        1D inputs with full attention: everything but attention acts on each token alone
+        (not with MoE, whose auxiliary loss uses statistics over the whole sequence)."""
+        return self.is_1d and self.attn_type == "vanilla" and self.num_experts is None
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -415,23 +428,44 @@ class DiT(nn.Module):
         
         return x
 
-    def forward(self, x, t, classes, return_act=False, *args, **kwargs):
+    def forward(self, x, t, classes, return_act=False, *args, mask=None, cp=None, **kwargs):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
+        cp: optional fluidFlow.context_parallel.ContextParallel (1D only). x (N, C, S) then
+            holds this GPU's contiguous slice of the sequences (see context_parallel.shard_batch),
+            and mask (N, S) its real points (the end of a slice may be padding).
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
-        t = self.t_embedder(t)                   # (N, D)
         force_drop_ids = kwargs.get("force_drop_ids", None)
+        feat_rope, token_mask, attn_cp = self.feat_rope, None, None
+        if cp is None:
+            x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        else:
+            x = self.x_embedder(x)  # (N, T_local, D)
+            B, T = x.shape[:2]
+            # global positions of the local tokens (the padding at the end of a slice gets the last one)
+            num_patches = self.x_embedder.num_patches
+            start = cp.token_offset(num_patches)
+            pos = torch.arange(start, start + T, device=x.device).clamp(max=num_patches - 1)
+            x = x + self.pos_embed[:, pos]
+            if feat_rope is not None:
+                feat_rope = partial(feat_rope, positions=pos)
+            token_mask = (torch.ones(B, T, dtype=torch.bool, device=x.device) if mask is None
+                          else mask.view(B, T, self.patch_size).any(dim=-1))
+            attn_cp = cp.prepare(token_mask)  # None without CP (cp size 1): plain attention
+            if self.training and force_drop_ids is None and self.y_embedder.dropout_prob > 0:
+                # the classifier-free guidance dropout must drop a sample on all its slices
+                force_drop_ids = cp.broadcast(torch.rand(B, device=x.device) < self.y_embedder.dropout_prob)
+        t = self.t_embedder(t)                   # (N, D)
         y = self.y_embedder(classes, self.training, force_drop_ids)    # (N, D)
         c = t + y                                # (N, D)
         for block in self.blocks:
             if self.gradient_checkpointing:
-                x = checkpoint(block, x, c, self.feat_rope, use_reentrant=False)
+                x = checkpoint(block, x, c, feat_rope, token_mask, attn_cp, use_reentrant=False)
             else:
-                x = block(x, c, self.feat_rope)                      # (N, T, D)
+                x = block(x, c, feat_rope, token_mask, attn_cp)      # (N, T, D)
         act = x
         x = self.final_layer(x, c)               # (B, num_patches, patch_size * out_channels)
         x = self.unpatchify(x)                   # (B, out_channels, S)

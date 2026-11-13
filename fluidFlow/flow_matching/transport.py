@@ -5,6 +5,7 @@ import numpy as np
 from scipy.stats import norm
 
 import enum
+from functools import partial
 
 from . import path
 from .integrators import ode, sde
@@ -42,6 +43,17 @@ def mean_flat(x):
     Take the mean over all non-batch dimensions.
     """
     return th.mean(x, dim=list(range(1, len(x.size()))))
+
+
+def global_mean_share(x, mask, cp):
+    """Context parallelism: this GPU's share of the mean of x (B, ..., L) over the real
+    points of the global batch, i.e. its sum over its real points divided by the number of
+    real values on all the GPUs. The shares add up to the mean, which for sequences of equal
+    length is the mean of the per-sample means (mean_flat followed by .mean())."""
+    if mask is not None:
+        mask = mask.view(mask.shape[0], *([1] * (x.dim() - 2)), mask.shape[-1]).expand_as(x)
+        return th.where(mask, x, 0.0).sum() / cp.global_sum(mask.sum())
+    return x.sum() / cp.global_sum(th.tensor(x.numel(), device=x.device))
 
 
 class Transport:
@@ -196,17 +208,27 @@ class Transport:
         model_kwargs=None,
         sp_timesteps=None,
         shifted_mu=0,
+        mask=None,
+        cp=None,
     ):
         """Loss for training the score model
         Args:
         - model: backbone model; could be score, noise, or velocity
         - x1: datapoint
         - model_kwargs: additional arguments for the model
+        - mask, cp: context parallelism (see fluidFlow.context_parallel): x1 is this GPU's
+          slice of the sequences, mask (B, L) its real points. terms["loss"] is then this
+          GPU's share of the mean loss of the global batch (the shares of all the GPUs add up to it).
         """
         if model_kwargs is None:
             model_kwargs = {}
-        
+        if cp is not None and self.equilibrium_matching:
+            raise NotImplementedError("equilibrium matching needs whole sequences (no context parallelism)")
+
         t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu)
+        if cp is not None:
+            # every slice of a sample is at the same diffusion time (the noise x0 is drawn per slice)
+            t = cp.broadcast(t)
         t, xt, ut = self.path_sampler.plan(t, x0, x1)
         xt.requires_grad = True
         if self.equilibrium_matching:
@@ -238,11 +260,13 @@ class Transport:
 
         terms = {}
         terms['pred'] = model_output
+        # per-sample mean, or this GPU's share of the global mean with context parallelism
+        reduce = mean_flat if cp is None else partial(global_mean_share, mask=mask, cp=cp)
         if self.model_type == ModelType.VELOCITY:
-            terms['loss'] = mean_flat(((model_output - ut) ** 2))
+            terms['loss'] = reduce(((model_output - ut) ** 2))
             if self.use_cosine_loss:
-                terms['cos_loss'] = mean_flat(1 - th.nn.functional.cosine_similarity(model_output, ut, dim=1))
-        else: 
+                terms['cos_loss'] = reduce(1 - th.nn.functional.cosine_similarity(model_output, ut, dim=1))
+        else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
             sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
             if self.loss_type in [WeightType.VELOCITY]:
@@ -255,9 +279,9 @@ class Transport:
                 raise NotImplementedError()
             
             if self.model_type == ModelType.NOISE:
-                terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
+                terms['loss'] = reduce(weight * ((model_output - x0) ** 2))
             else:
-                terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
+                terms['loss'] = reduce(weight * ((model_output * sigma_t + x0) ** 2))
         terms["loss"] += 0.5 * disp_loss
         return terms
     
@@ -549,6 +573,7 @@ class Sampler:
         return _sample_fn
 
 class FlowMatching(nn.Module):
+
     def __init__(
         self,
         sampler,
@@ -582,22 +607,46 @@ class FlowMatching(nn.Module):
         self.channels = neural_net.channels
         self.cond_dim = neural_net.cond_dim
 
-    def forward(self, x, classes=None):
+    @property
+    def supports_context_parallel(self):
+        # the flow matching loss is pointwise: whether a sequence can be split over GPUs
+        # depends on the network (e.g. DiT: 1D with full attention)
+        return getattr(self.neural_net, "supports_context_parallel", False)
+
+    @property
+    def patch_size(self):
+        return self.neural_net.patch_size
+
+    def enable_gradient_checkpointing(self):
+        # called by the Trainer with gradient_checkpointing=True
+        self.neural_net.enable_gradient_checkpointing()
+
+    def forward(self, x, classes=None, mask=None, cp=None):
+        """x: (B, C, ...) data, classes: (B, cond_dim) conditions.
+        mask, cp: context parallelism (see Transport.training_losses): x is this GPU's
+        slice of the sequences and mask (B, L) its real points."""
+        model_kwargs = {"classes": classes}
+        if cp is not None:
+            model_kwargs.update(mask=mask, cp=cp)
         terms = self.sampler.transport.training_losses(
             self.neural_net,
             x,
             shifted_mu=self.shifted_mu,
-            model_kwargs={"classes": classes}
+            model_kwargs=model_kwargs,
+            mask=mask,
+            cp=cp,
         )
         loss = terms["loss"].mean()
         if "cos_loss" in terms:
             loss += terms["cos_loss"].mean()
         return loss
 
-    def sample(self, classes, return_all_steps=False, **model_kwargs):
+    def sample(self, classes, return_all_steps=False, num_steps=None, **model_kwargs):
+        """num_steps: ODE steps, default num_sampling_steps (e.g. fewer for a cheap validation
+        during training: Trainer(eval_sampling_kwargs={"num_steps": 100}))."""
         sample_fn = self.sampler.sample_ode(
             sampling_method=self.sampling_method,
-            num_steps=self.num_sampling_steps,
+            num_steps=self.num_sampling_steps if num_steps is None else num_steps,
             atol=self.sampler_atol,
             rtol=self.sampler_rtol,
             reverse=self.reverse_sampling,

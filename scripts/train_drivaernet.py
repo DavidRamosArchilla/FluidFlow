@@ -124,8 +124,8 @@ if trainer.accelerator.is_main_process:
     # save norm stats for denormalization at eval (standalone or below)
     torch.save(coefficients, os.path.join(results_folder, "norm_stats.pt"))
 
+trainer.load(6)
 trainer.train()
-# trainer.load(7)
 
 # ---- prediction on the test set (multi-GPU if available) ----
 trainer.ema.ema_model.eval()

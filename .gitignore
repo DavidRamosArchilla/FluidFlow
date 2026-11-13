@@ -5,12 +5,13 @@ data/driveaernet
 data/hump
 data/cylinder
 run_job*.sh
-launcher.sh
+launcher*.sh
 logs/*
 reports/
 scripts/slurm/
 tex/
 scripts/paper
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

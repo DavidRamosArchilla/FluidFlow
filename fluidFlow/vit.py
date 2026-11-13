@@ -77,6 +77,9 @@ class ViT(DiT):
             below l1_weight / 2 still get a constant push, while large errors
             keep the quadratic weight. 0 = pure MSE.
     """
+    # its own forward (rollouts, coordinate embedding) does not handle sequence slices
+    supports_context_parallel = False
+
     def __init__(self, out_channels=None, residual=True, coords=None, num_frequencies=16,
                  valid_length=None, unroll_schedule=None, detach_every=None, l1_weight=0.0, **kwargs):
         kwargs.setdefault("class_dropout_prob", 0.0)  # deterministic regression, no CFG

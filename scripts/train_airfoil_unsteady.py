@@ -39,10 +39,10 @@ max_train_samples = None
 max_valid_samples = None
 max_test_samples = None
 # ---------- model config ----------
-patch_size = 1
+patch_size = 8
 depth = 8
-hidden_size = 1024
-num_heads = 16
+hidden_size = 256
+num_heads = 4
 factorize = True          # True if time_frames > 32 to save memory
 # ---------- training config ----------
 train_batch_size = 16
@@ -55,8 +55,8 @@ muon_lr = 2e-4
 muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999         # EMA horizon ~10k steps (0.995 -> ~2k steps)
-use_lognorm = True        # logit-normal timestep sampling instead of uniform
-results_folder = 'results/airfoil_unsteady/d8_p1_latent_32_channels_causal'
+use_lognorm = False        # logit-normal timestep sampling instead of uniform
+results_folder = 'results/airfoil_unsteady/d8_p8_linear'
 # ---------- evaluation config ----------
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
@@ -179,11 +179,11 @@ model = VideoDiT(
     learn_sigma=False,
     use_swiglu=True,
     qk_norm=True,  # to avoid stability issues with bf16
-    attn_type="vanilla",
-    slice_num=128,
+    attn_type="linear",
+    # slice_num=128,
     mlp_ratio=2.5,
     factorize=factorize,
-    causal_time=True,  # True if the model should be causal in time
+    causal_time=False,  # True if the model should be causal in time
 )
 print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 
@@ -217,6 +217,7 @@ trainer = Trainer(
     muon_weight_decay=muon_weight_decay,
     compile_model=True,
     split_batches=True,
+    gradient_checkpointing=True
 )
 
 shutil.copy(__file__, os.path.join(results_folder, os.path.basename(__file__)))

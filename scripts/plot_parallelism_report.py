@@ -89,7 +89,7 @@ def table(records, title):
     return "\n".join(rows) + "\n"
 
 
-def fig_long_sequences(records, path):
+def fig_long_sequences(records, path, unit="car"):
     """Peak memory and throughput per GPU vs tokens per car, one line per configuration (1 node)."""
     fig, (ax_mem, ax_tp) = plt.subplots(1, 2, figsize=(10.5, 4.2), constrained_layout=True)
     ticks = {}
@@ -114,9 +114,9 @@ def fig_long_sequences(records, path):
         ax.set_xscale("log")
         ax.set_xticks(sorted(ticks), labels=[f"p={ticks[t]}\n{t / 1e3:.0f}k" for t in sorted(ticks)])
         ax.minorticks_off()
-        ax.set_xlabel("patch size and tokens per car")
+        ax.set_xlabel(f"patch size and tokens per {unit}")
     ax_mem.set_ylabel("peak memory per GPU (GB)")
-    ax_mem.set_title("Memory per GPU, one car per group")
+    ax_mem.set_title(f"Memory per GPU, one {unit} per group")
     ax_tp.set_ylabel("model TFLOP/s per GPU")
     ax_tp.set_title("Throughput per GPU")
     handles, labels = ax_mem.get_legend_handles_labels()

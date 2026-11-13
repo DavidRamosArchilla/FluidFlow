@@ -65,11 +65,11 @@ class Attention(nn.Module):
             k = self.k_norm(k.to(self.k_norm.weight.dtype)).to(dtype)
 
         if rope is not None:
-            q = rope(q)
-            k = rope(k)
+            # the cached frequencies are float32: back to the dtype of v (FA4 needs the same for q, k, v)
+            q = rope(q).to(dtype)
+            k = rope(k).to(dtype)
         if cp is not None:
-            # the gathered sequence is in rank order: only valid without positional encodings
-            assert rope is None, "context parallelism does not support rope"
+            # rope (if any) must rotate the local tokens with their global positions (see DiT.forward)
             # (B, heads, N, head_dim) -> (B, N, heads, head_dim), exchanged over the CP group
             x = cp.attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
                              use_flash=is_flash_attn_available)
@@ -428,13 +428,18 @@ class VisionRotaryEmbeddingFast(nn.Module):
 
         print(f'======== RoPE 1D initialized with shape {self.freqs_cos.shape} ========')
 
-    def forward(self, t):
+    def forward(self, t, positions=None):
         # t shape: (Batch, Heads, Seq_Len, Dim)
+        # positions: optional (Seq_Len,) positions of the tokens, e.g. a context parallel slice
         seq_len = t.shape[-2]
-        
+
         # Slice the cached frequencies to the current sequence length
         # Reshape to (1, 1, Seq_Len, Dim) for broadcasting
-        cos = self.freqs_cos[:seq_len].view(1, 1, seq_len, -1)
-        sin = self.freqs_sin[:seq_len].view(1, 1, seq_len, -1)
-        
+        if positions is None:
+            cos = self.freqs_cos[:seq_len].view(1, 1, seq_len, -1)
+            sin = self.freqs_sin[:seq_len].view(1, 1, seq_len, -1)
+        else:
+            cos = self.freqs_cos[positions].view(1, 1, seq_len, -1)
+            sin = self.freqs_sin[positions].view(1, 1, seq_len, -1)
+
         return t * cos + rotate_half(t) * sin

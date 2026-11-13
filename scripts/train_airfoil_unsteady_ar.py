@@ -64,6 +64,7 @@ muon_weight_decay = 1e-2
 ema_decay = 0.999
 l1_weight = 0.1           # loss = MSE + l1_weight * MAE of the normalized increment (0 = pure MSE)
 results_folder = 'results/airfoil_unsteady/vit_ar_d8_h512_l1_0.1'
+
 # ---------- evaluation config ----------
 eval_batch_size = 8
 eval_space = "physical"  # "physical", "normalized" or "both"
