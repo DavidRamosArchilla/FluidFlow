@@ -72,12 +72,17 @@ class ViT(DiT):
             schedule ends). None = one step.
         detach_every: truncate backprop through the unroll every M steps
             (None = full backprop through all K steps).
+        l1_weight: training loss = MSE + l1_weight * MAE of the (normalized)
+            error. Per point the gradient is 2e + l1_weight * sign(e), so errors
+            below l1_weight / 2 still get a constant push, while large errors
+            keep the quadratic weight. 0 = pure MSE.
     """
     def __init__(self, out_channels=None, residual=True, coords=None, num_frequencies=16,
-                 valid_length=None, unroll_schedule=None, detach_every=None, **kwargs):
+                 valid_length=None, unroll_schedule=None, detach_every=None, l1_weight=0.0, **kwargs):
         kwargs.setdefault("class_dropout_prob", 0.0)  # deterministic regression, no CFG
         super().__init__(**kwargs)
         assert self.is_1d, "ViT only supports 1D (mesh) inputs"
+        self.l1_weight = l1_weight
         self.residual = residual
         self.is_video = False
         self.out_channels = self.channels if out_channels is None else out_channels
@@ -168,6 +173,13 @@ class ViT(DiT):
             out = context[:, :self.out_channels].float() + out * self.delta_std + self.delta_mean
         return out * self.node_mask
 
+    def pointwise_loss(self, err):
+        """Squared error, plus l1_weight * absolute error."""
+        loss = err ** 2
+        if self.l1_weight:
+            loss = loss + self.l1_weight * err.abs()
+        return loss
+
     def unrolled_loss(self, x, classes, context, **kwargs):
         """
         Roll out K steps from context on the model's own predictions and
@@ -192,7 +204,7 @@ class ViT(DiT):
             if self.detach_every and k > 0 and k % self.detach_every == 0:
                 state = state.detach()
             state = step_fn(state, classes, **kwargs)
-            err = ((state - x[:, k].float()) / scale) ** 2 * self.node_mask
+            err = self.pointwise_loss((state - x[:, k].float()) / scale) * self.node_mask
             loss = loss + err.sum() / norm
         return loss / n_steps
 
@@ -210,7 +222,7 @@ class ViT(DiT):
         target = x.float()
         if self.residual:
             target = (target - context[:, :self.out_channels].float() - self.delta_mean) / self.delta_std
-        err = (target - out) ** 2 * self.node_mask
+        err = self.pointwise_loss(target - out) * self.node_mask
         return err.sum() / (self.node_mask.sum() * err.shape[0] * err.shape[1])
 
     def sample(self, classes, context=None, num_steps=None, **model_kwargs):
