@@ -65,7 +65,7 @@ use_coord_pe = True       # Fourier embedding of the mesh coordinates instead of
 num_frequencies = 16
 # ---------- unrolled training config ----------
 # fine-tune: start from the EMA weights of a one-step run (model config above must match)
-init_checkpoint = 'results/airfoil_unsteady/vit_ar_d10_h1024/model-15.pt'  # None = from scratch
+init_checkpoint = 'results/airfoil_unsteady/vit_ar_d10_h1024_l1_0.1_bs64_400k_mlp_ratio_4/model-20.pt'  # None = from scratch
 # curriculum: (K, optimizer steps) stages in order; the last K is kept afterwards
 # (the h768 fine-tune had its best validation rollout inside the K=32 stage, so it is longer here)
 unroll_schedule = [(2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 20000)]
@@ -75,7 +75,7 @@ unroll_schedule = [(2, 5000), (4, 5000), (8, 10000), (16, 10000), (32, 20000)]
 detach_every = None       # truncate backprop every M unroll steps (None = full backprop)
 gradient_checkpointing = True  # checkpoint whole AR steps: memory ~flat in K, ~1.3x compute
 # ---------- training config ----------
-train_batch_size = 16
+train_batch_size = 64
 gradient_accumulate_every = 1
 train_lr = 5e-5           # AdamW lr (1D params); use 2e-4 when training from scratch
 train_steps = sum(n for _, n in unroll_schedule)  # optimizer steps (each = gradient_accumulate_every micro-batches)
@@ -84,10 +84,10 @@ muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999
 save_and_sample_every = 5000
-results_folder = 'results/airfoil_unsteady/vit_ar_d10_h1024_unroll_ft'
+results_folder = 'results/airfoil_unsteady/vit_ar_d10_h1024_l1_0.1_bs64_400k_mlp_ratio_4_unroll'
 select_best_checkpoint = True  # evaluate the EMA weights of the milestone with the lowest validation rollout MSE
 # ---------- evaluation config ----------
-eval_batch_size = 8
+eval_batch_size = 32
 eval_space = "physical"  # "physical", "normalized" or "both"
 eval_sample = "auto"     # GIF sample: "auto", "auto:K" or int
 eval_fft_samples = "auto"  # FFT samples: "auto", "auto:K" or "i,j,k"
