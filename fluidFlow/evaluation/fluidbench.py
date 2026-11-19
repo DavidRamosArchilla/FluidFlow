@@ -51,11 +51,24 @@ def read_training_config(results_folder, pattern="train_*.py"):
     return cfg
 
 
-def latest_milestone(results_folder):
-    milestones = [int(m.group(1)) for path in glob.glob(os.path.join(results_folder, "model-*.pt"))
-                  if (m := re.fullmatch(r"model-(\d+)\.pt", os.path.basename(path)))]
+def list_milestones(results_folder):
+    """Sorted milestones m of the model-{m}.pt checkpoints in a results folder."""
+    milestones = sorted(int(m.group(1)) for path in glob.glob(os.path.join(results_folder, "model-*.pt"))
+                        if (m := re.fullmatch(r"model-(\d+)\.pt", os.path.basename(path))))
     assert milestones, f"no model-*.pt in {results_folder}"
-    return max(milestones)
+    return milestones
+
+
+def latest_milestone(results_folder):
+    return list_milestones(results_folder)[-1]
+
+
+def load_ema_weights(model, path):
+    """Load the EMA weights of a Trainer checkpoint into ``model`` (strict); returns the checkpoint."""
+    ckpt = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+    ema_state = {k[len("ema_model."):]: v for k, v in ckpt["ema"].items() if k.startswith("ema_model.")}
+    model.load_state_dict(ema_state)
+    return ckpt
 
 
 class FluidBenchWrapper(nn.Module):
@@ -199,11 +212,10 @@ class FluidBenchWrapper(nn.Module):
             coords=coords,
             num_frequencies=cfg["num_frequencies"],
             valid_length=stats["original_length"],
+            l1_weight=cfg.get("l1_weight", 0.0),  # only enters the training loss, not the predictions
         )
         path = os.path.join(results_folder, f"model-{milestone}.pt")
-        ckpt = torch.load(path, map_location="cpu", weights_only=True)
-        ema_state = {k[len("ema_model."):]: v for k, v in ckpt["ema"].items() if k.startswith("ema_model.")}
-        model.load_state_dict(ema_state)
+        ckpt = load_ema_weights(model, path)
         print(f"Loaded EMA weights from {path} (step {ckpt['step']})")
 
         wrapper = cls(
@@ -218,5 +230,11 @@ class FluidBenchWrapper(nn.Module):
             cond_indices=[list(benchmark_scalars).index(name) for name in stats["cond_names"]],
             **kwargs,
         )
-        wrapper.checkpoint = {"path": path, "step": int(ckpt["step"]), "loss_history": ckpt["loss_history"]}
+        wrapper.checkpoint = {
+            "path": path,
+            "step": int(ckpt["step"]),
+            "loss_history": ckpt["loss_history"],
+            "test_loss_history": ckpt.get("test_loss_history"),
+            "config": cfg,
+        }
         return wrapper
