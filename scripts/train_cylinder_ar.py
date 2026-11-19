@@ -43,7 +43,7 @@ max_valid_samples = None
 max_test_samples = None
 valid_frame_stride = 5    # validation pairs: every k-th starting frame (one-step MSE during training)
 # ---------- model config ----------
-patch_size = 8            # 8000 cells -> 1000 tokens
+patch_size = 2            # 8000 cells -> 1000 tokens
 depth = 8
 hidden_size = 512
 num_heads = 8             # head_dim 64
@@ -55,13 +55,14 @@ num_frequencies = 16
 train_batch_size = 16
 gradient_accumulate_every = 1
 train_lr = 2e-4           # AdamW lr (1D params: biases, norms, patch embedder)
-train_steps = 2000       # optimizer steps (each = gradient_accumulate_every micro-batches)
+train_steps = 50000       # optimizer steps (each = gradient_accumulate_every micro-batches)
 muon_lr = 2e-4
 muon_adjust_lr_fn = "match_rms_adamw"
 muon_weight_decay = 1e-2
 ema_decay = 0.999
-save_and_sample_every = 2000
-results_folder = 'results/cylinder/vit_ar_p8_d8_h512_first_test'
+save_and_sample_every = 5000
+l1_weight = 0.1  
+results_folder = 'results/cylinder/vit_ar_p2_d8_h512_l1_0.1'
 load_milestone = None     # set to m to skip training and evaluate model-{m}.pt
 # ---------- evaluation config ----------
 eval_batch_size = 8
@@ -111,6 +112,7 @@ model = ViT(
     coords=coefficients["centers"] if use_coord_pe else None,
     num_frequencies=num_frequencies,
     valid_length=valid_length,
+    l1_weight=l1_weight,
 )
 # set before the Trainer is built so the EMA copy carries the stats too
 model.set_delta_stats(delta_mean, delta_std)

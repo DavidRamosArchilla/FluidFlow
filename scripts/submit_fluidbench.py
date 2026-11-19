@@ -13,8 +13,9 @@ Run from the FluidFlow root:
 
     # GPU node: evaluate, then copy into <fluidbench_dir>/submissions/ and refresh the manifests
     PYTHONPATH=$PWD python scripts/submit_fluidbench.py \
-        --results_folder results/cylinder/vit_ar_p8_d8_h512_first_test --publish
+        --results_folder results/cylinder/vit_ar_p2_d8_h512_l1_0.1 --publish
 
+The training curves get one point per saved checkpoint (see checkpoint_history).
 The script never runs git: review and commit the changes in the clone yourself.
 """
 import argparse
@@ -25,31 +26,26 @@ import shutil
 import sys
 import warnings
 
-import h5py
-import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
 from fluidFlow.evaluation import FluidBenchWrapper
-
-DEFAULT_DESCRIPTION = ("Autoregressive ViT over patches of 8 mesh cells with Fourier coordinate embedding "
-                       "and adaLN conditioning on Re, predicting the normalised increment.")
+from fluidFlow.evaluation.fluidbench import REPO_ROOT, list_milestones, load_ema_weights
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--results_folder", default="results/cylinder/vit_ar_p8_d8_h512_first_test")
+    p.add_argument("--results_folder", default="results/cylinder/vit_ar_p2_d8_h512_l1_0.1")
     p.add_argument("--milestone", type=int, default=None, help="model-{milestone}.pt (default: latest)")
     p.add_argument("--fluidbench_dir", default="../FluidBench")
-    p.add_argument("--benchmark", default="cylinder_Re41_raw")
+    p.add_argument("--benchmark", default="cylinder_raw")
     p.add_argument("--id", default="ar-vit", help="submission id (folder name on the site)")
     p.add_argument("--model", default="AR ViT", help="model name shown on the leaderboard")
-    p.add_argument("--description", default=DEFAULT_DESCRIPTION)
+    p.add_argument("--description", default=None, help="one phrase, <= 240 chars (default: built from the config)")
     p.add_argument("--authors", default="David Ramos")
     p.add_argument("--year", type=int, default=2026)
     p.add_argument("--representation", default="Graph", choices=["Graph", "Grid", "Patches"])
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--history_points", type=int, default=20, help="points of the published training curve")
-    p.add_argument("--val_fraction", type=float, default=0.1, help="tail of each training case for the val loss")
     p.add_argument("--no_history", action="store_true", help="publish without training curves")
     p.add_argument("--download_only", action="store_true")
     p.add_argument("--publish", action="store_true",
@@ -57,46 +53,103 @@ def parse_args():
     return p.parse_args()
 
 
+def loss_name(cfg):
+    l1_weight = cfg.get("l1_weight", 0.0)
+    return f"MSE + {l1_weight:g}·MAE (normalised increment)" if l1_weight else "MSE (normalised increment)"
+
+
+def validation_source(cfg):
+    """Split used for validation by scripts/train_cylinder_ar.py (load_cylinder: valid/, else test/)."""
+    data_dir = cfg["data_dir"] if os.path.isabs(cfg["data_dir"]) else os.path.join(REPO_ROOT, cfg["data_dir"])
+    return data_dir, "valid" if os.path.isdir(os.path.join(data_dir, "valid")) else "test"
+
+
+def default_description(cfg, cond_names, with_history):
+    text = (f"Autoregressive ViT over patches of {cfg['patch_size']} mesh cells with Fourier coordinate "
+            f"embedding and adaLN conditioning on {', '.join(cond_names)}, predicting the normalised increment")
+    if cfg.get("l1_weight"):
+        text += f", trained with MSE + {cfg['l1_weight']:g}·MAE"
+    text += "."
+    if with_history and validation_source(cfg)[1] == "test":
+        text += " Validation curve: loss on the test cases."
+    return text
+
+
 @torch.inference_mode()
-def tail_validation_loss(wrapper, train_dir, val_fraction, batch_size=8):
-    """Training loss (normalized-increment MSE) of the wrapped model on the last pairs of each training case."""
-    model = wrapper.model.eval()
-    case_paths = sorted((p for p in os.listdir(train_dir) if p.endswith(".h5") and p[:-3].isdigit()),
-                        key=lambda p: int(p[:-3]))
-    total, count = 0.0, 0
-    for name in case_paths:
-        with h5py.File(os.path.join(train_dir, name), "r") as case_file:
-            scalars, fields = torch.from_numpy(case_file["scalars"][:]), torch.from_numpy(case_file["fields"][:])
-        n_pairs = len(fields) - 1
-        start = n_pairs - max(1, round(n_pairs * val_fraction))
-        for i in range(start, n_pairs, batch_size):
-            j = min(i + batch_size, n_pairs)
-            context, target = wrapper._normalize(fields[i:j]), wrapper._normalize(fields[i + 1:j + 1])
-            with wrapper._autocast():
-                loss = model(target, classes=wrapper._conds(scalars[i:j]), context=context)
-            total += loss.item() * (j - i)
-            count += j - i
-    return total / count
+def checkpoint_history(wrapper, results_folder, batch_size=8):
+    """FluidBench training_history with one point per saved checkpoint model-{m}.pt.
 
+    train: the recorded per-step training loss, averaged over the steps since
+        the previous checkpoint.
+    val: the same loss of each checkpoint's EMA weights on the validation pairs
+        of scripts/train_cylinder_ar.py (every valid_frame_stride-th frame of
+        the valid/ split, or of test/ when there is no valid/ folder).
 
-def training_history(wrapper, train_dir, points, val_fraction):
-    """FluidBench training_history from the checkpoint loss history.
-
-    The train curve is the real per-step loss averaged into ``points`` chunks.
-    Only the final checkpoint is available, so the validation curve repeats a
-    single value: the final model's loss on the tail of the training cases,
-    which were not held out during training. It is a placeholder.
+    The trainer's own validation record (test_loss_history: one-step MSE of the
+    normalised fields) is in other units than the training loss, so it is only
+    recomputed here as a check.
     """
-    losses = wrapper.checkpoint["loss_history"].double().numpy()
-    train_curve = [float(chunk.mean()) for chunk in np.array_split(losses, min(points, len(losses)))]
-    val_loss = tail_validation_loss(wrapper, train_dir, val_fraction)
-    warnings.warn(f"the validation curve is a placeholder: the final val loss {val_loss:.3e} is repeated "
-                  f"{len(train_curve)} times, and those pairs were not held out during training")
+    from data.load_airfoil_unsteady import make_pair_dataset
+    from data.load_cylinder import load_cylinder
+
+    cfg = wrapper.checkpoint["config"]
+    model = wrapper.model.eval()
+    device = wrapper.fields_mean.device
+    data_dir, val_split_name = validation_source(cfg)
+    dataset_train, dataset_valid, _, coefficients = load_cylinder(
+        data_dir,
+        cond_keys=cfg["cond_keys"],
+        time_stride=cfg["time_stride"],
+        max_train_samples=cfg.get("max_train_samples"),
+        max_valid_samples=cfg.get("max_valid_samples"),
+        max_test_samples=cfg.get("max_test_samples"),
+        patch_size=cfg["patch_size"],
+    )
+    assert torch.allclose(coefficients["fields_mean"].reshape(-1), wrapper.fields_mean.reshape(-1).cpu()) and \
+        torch.allclose(coefficients["fields_std"].reshape(-1), wrapper.fields_std.reshape(-1).cpu()), \
+        "the data in data_dir is not the data the model was trained on (normalisation stats differ)"
+    pairs = make_pair_dataset(dataset_valid, frame_stride=cfg["valid_frame_stride"])
+    loader = DataLoader(pairs, batch_size=batch_size, shuffle=False)
+    n_train, n_valid = len(dataset_train), len(dataset_valid)
+    print(f"validation: {len(pairs)} pairs from {n_valid} cases of {val_split_name}/ "
+          f"({n_train} training cases)")
+
+    losses = wrapper.checkpoint["loss_history"].double()
+    recorded = wrapper.checkpoint.get("test_loss_history")
+    recorded = [] if recorded is None else recorded.tolist()
+    every = cfg["save_and_sample_every"]
+    final_milestone = int(wrapper.checkpoint["step"]) // every
+    milestones = [m for m in list_milestones(results_folder) if m <= final_milestone]
+
+    train_curve, val_curve = [], []
+    print(f"{'ckpt':>4} {'step':>7} {'train':>11} {'val':>11} {'val field MSE':>13} {'(recorded)':>11}")
+    for m in milestones:
+        ckpt = load_ema_weights(model, os.path.join(results_folder, f"model-{m}.pt"))
+        loss_sum, sq_sum, n_pairs, n_values = 0.0, 0.0, 0, 0
+        for target, conds, context in loader:
+            target, conds, context = target.to(device), conds.to(device), context.to(device)
+            with wrapper._autocast():
+                loss = model(target, classes=conds, context=context)
+                pred = model.step(context, conds)
+            loss_sum += loss.item() * len(target)
+            sq_sum += (((pred - target.float()) ** 2) * model.node_mask).sum().item()
+            n_pairs += len(target)
+            n_values += model.node_mask.sum().item() * target.shape[0] * target.shape[1]
+        train_curve.append(losses[(m - 1) * every:m * every].mean().item())
+        val_curve.append(loss_sum / n_pairs)
+        field_mse = sq_sum / n_values
+        rec = f"{recorded[m - 1]:11.4e}" if m - 1 < len(recorded) else f"{'-':>11}"
+        print(f"{m:>4} {int(ckpt['step']):>7} {train_curve[-1]:11.4e} {val_curve[-1]:11.4e} {field_mse:13.4e} {rec}")
+    load_ema_weights(model, wrapper.checkpoint["path"])  # back to the evaluated checkpoint
+
+    if val_split_name == "test":
+        warnings.warn("there is no valid/ split: the validation curve is computed on the test cases "
+                      "(not a hold-out of the training data)")
     return {
         "train_error_history": train_curve,
-        "val_error_history": [val_loss] * len(train_curve),
-        "train_error_name": "MSE (normalised increment)",
-        "val_split": val_fraction,
+        "val_error_history": val_curve,
+        "train_error_name": loss_name(cfg),
+        "val_split": n_valid / (n_train + n_valid),
     }
 
 
@@ -123,19 +176,21 @@ def main():
     wrapper.to(args.device)
     print(f"channel order (model <- benchmark): {wrapper.channel_order}, condition scalars: {wrapper.cond_indices}")
 
-    history = None
-    if not args.no_history:
-        history = training_history(wrapper, os.path.join(dataset_dir, "train"), args.history_points, args.val_fraction)
+    history = None if args.no_history else checkpoint_history(wrapper, results_folder)
+    cfg = wrapper.checkpoint["config"]
+    cond_names = [benchmark["inputScalarNames"][i] for i in wrapper.cond_indices]
+    description = args.description or default_description(cfg, cond_names, history is not None)
 
     config = {
         "datasetId": args.benchmark,
         "id": args.id,
         "model": args.model,
-        "description": args.description,
+        "description": description,
         "authors": args.authors,
         "year": args.year,
         "representation": args.representation,
     }
+    print(f"description ({len(description)} chars): {description}")
     submission = fluidbench.run(wrapper, config, history)
     metrics = submission["metrics"]
     print(f"one-step rmse {metrics['rmse']:.4e}, rollout rmse {metrics['rolloutRmse']:.4e}, "
